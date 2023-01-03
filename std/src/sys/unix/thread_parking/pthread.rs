@@ -44,7 +44,8 @@ unsafe fn wait_timeout(
         target_os = "macos",
         target_os = "ios",
         target_os = "watchos",
-        target_os = "espidf"
+        target_os = "espidf",
+        target_os = "horizon",
     ))]
     let (now, dur) = {
         use crate::cmp::min;
@@ -70,7 +71,8 @@ unsafe fn wait_timeout(
         target_os = "macos",
         target_os = "ios",
         target_os = "watchos",
-        target_os = "espidf"
+        target_os = "espidf",
+        target_os = "horizon",
     )))]
     let (now, dur) = {
         use crate::sys::time::Timespec;
@@ -97,7 +99,7 @@ impl Parker {
     ///
     /// # Safety
     /// The constructed parker must never be moved.
-    pub unsafe fn new(parker: *mut Parker) {
+    pub unsafe fn new_in_place(parker: *mut Parker) {
         // Use the default mutex implementation to allow for simpler initialization.
         // This could lead to undefined behaviour when deadlocking. This is avoided
         // by not deadlocking. Note in particular the unlocking operation before any
