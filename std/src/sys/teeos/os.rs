@@ -1,71 +1,30 @@
-use super::unsupported;
+//! Implementation of `std::os` functionality for teeos
+
+use core::marker::PhantomData;
+
 use crate::error::Error as StdError;
 use crate::ffi::{OsStr, OsString};
 use crate::fmt;
 use crate::io;
-use crate::marker::PhantomData;
-use crate::os::xous::ffi::Error as XousError;
-use crate::path::{self, PathBuf};
+use crate::path;
+use crate::path::PathBuf;
 
-#[cfg(not(test))]
-#[cfg(feature = "panic_unwind")]
-mod eh_unwinding {
-    pub(crate) struct EhFrameFinder(usize /* eh_frame */);
-    pub(crate) static mut EH_FRAME_SETTINGS: EhFrameFinder = EhFrameFinder(0);
-    impl EhFrameFinder {
-        pub(crate) unsafe fn init(&mut self, eh_frame: usize) {
-            unsafe {
-                EH_FRAME_SETTINGS.0 = eh_frame;
-            }
-        }
-    }
-    unsafe impl unwind::EhFrameFinder for EhFrameFinder {
-        fn find(&self, _pc: usize) -> Option<unwind::FrameInfo> {
-            Some(unwind::FrameInfo {
-                text_base: None,
-                kind: unwind::FrameInfoKind::EhFrame(self.0),
-            })
-        }
-    }
-}
-
-#[cfg(not(test))]
-mod c_compat {
-    use crate::os::xous::ffi::exit;
-    extern "C" {
-        fn main() -> u32;
-    }
-
-    #[no_mangle]
-    pub extern "C" fn abort() {
-        exit(1);
-    }
-
-    #[no_mangle]
-    pub extern "C" fn _start(eh_frame: usize) {
-        #[cfg(feature = "panic_unwind")]
-        unsafe {
-            super::eh_unwinding::EH_FRAME_SETTINGS.init(eh_frame);
-            unwind::set_custom_eh_frame_finder(&super::eh_unwinding::EH_FRAME_SETTINGS).ok();
-        }
-        exit(unsafe { main() });
-    }
-
-    // This function is needed by the panic runtime. The symbol is named in
-    // pre-link args for the target specification, so keep that in sync.
-    #[no_mangle]
-    // NB. used by both libunwind and libpanic_abort
-    pub extern "C" fn __rust_abort() -> ! {
-        exit(101);
-    }
-}
+use super::unsupported;
 
 pub fn errno() -> i32 {
-    0
+    unsafe { (*libc::__errno_location()) as i32 }
 }
 
-pub fn error_string(errno: i32) -> String {
-    Into::<XousError>::into(errno).to_string()
+// Hardcoded to return 4096, since `sysconf` is only implemented as a stub.
+pub fn page_size() -> usize {
+    // unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+    4096
+}
+
+// Everything below are stubs and copied from unsupported.rs
+
+pub fn error_string(_errno: i32) -> String {
+    "error string unimplemented".to_string()
 }
 
 pub fn getcwd() -> io::Result<PathBuf> {
@@ -137,7 +96,8 @@ impl fmt::Debug for Env {
 impl Iterator for Env {
     type Item = (OsString, OsString);
     fn next(&mut self) -> Option<(OsString, OsString)> {
-        self.0
+        let Self(inner) = self;
+        match *inner {}
     }
 }
 
@@ -150,11 +110,11 @@ pub fn getenv(_: &OsStr) -> Option<OsString> {
 }
 
 pub fn setenv(_: &OsStr, _: &OsStr) -> io::Result<()> {
-    Err(io::const_io_error!(io::ErrorKind::Unsupported, "cannot set env vars on this platform"))
+    Err(io::Error::new(io::ErrorKind::Unsupported, "cannot set env vars on this platform"))
 }
 
 pub fn unsetenv(_: &OsStr) -> io::Result<()> {
-    Err(io::const_io_error!(io::ErrorKind::Unsupported, "cannot unset env vars on this platform"))
+    Err(io::Error::new(io::ErrorKind::Unsupported, "cannot unset env vars on this platform"))
 }
 
 pub fn temp_dir() -> PathBuf {
@@ -165,8 +125,8 @@ pub fn home_dir() -> Option<PathBuf> {
     None
 }
 
-pub fn exit(code: i32) -> ! {
-    crate::os::xous::ffi::exit(code as u32);
+pub fn exit(_code: i32) -> ! {
+    panic!("TA should not call `exit`")
 }
 
 pub fn getpid() -> u32 {
