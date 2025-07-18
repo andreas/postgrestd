@@ -6,7 +6,7 @@
 
 use crate::borrow::{Borrow, BorrowMut};
 use crate::cmp::Ordering;
-use crate::convert::{Infallible, TryFrom};
+use crate::convert::Infallible;
 use crate::error::Error;
 use crate::fmt;
 use crate::hash::{self, Hash};
@@ -206,7 +206,7 @@ where
 
     #[inline]
     fn try_from(slice: &[T]) -> Result<[T; N], TryFromSliceError> {
-        <&Self>::try_from(slice).map(|r| *r)
+        <&Self>::try_from(slice).copied()
     }
 }
 
@@ -297,7 +297,7 @@ impl<'a, T, const N: usize> TryFrom<&'a mut [T]> for &'a mut [T; N] {
 /// ```
 /// use std::hash::BuildHasher;
 ///
-/// let b = std::collections::hash_map::RandomState::new();
+/// let b = std::hash::RandomState::new();
 /// let a: [u8; 3] = [0xa8, 0x3c, 0x09];
 /// let s: &[u8] = &[0xa8, 0x3c, 0x09];
 /// assert_eq!(b.hash_one(a), b.hash_one(s));
@@ -360,6 +360,7 @@ where
     }
 }
 
+/// Implements comparison of arrays [lexicographically](Ord#lexicographical-comparison).
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: PartialOrd, const N: usize> PartialOrd for [T; N] {
     #[inline]
@@ -512,6 +513,7 @@ impl<T, const N: usize> [T; N] {
     ///
     /// ```
     /// #![feature(array_try_map)]
+    ///
     /// let a = ["1", "2", "3"];
     /// let b = a.try_map(|v| v.parse::<u32>()).unwrap().map(|v| v + 1);
     /// assert_eq!(b, [2, 3, 4]);
@@ -520,12 +522,14 @@ impl<T, const N: usize> [T; N] {
     /// let b = a.try_map(|v| v.parse::<u32>());
     /// assert!(b.is_err());
     ///
-    /// use std::num::NonZeroU32;
+    /// use std::num::NonZero;
+    ///
     /// let z = [1, 2, 0, 3, 4];
-    /// assert_eq!(z.try_map(NonZeroU32::new), None);
+    /// assert_eq!(z.try_map(NonZero::new), None);
+    ///
     /// let a = [1, 2, 3];
-    /// let b = a.try_map(NonZeroU32::new);
-    /// let c = b.map(|x| x.map(NonZeroU32::get));
+    /// let b = a.try_map(NonZero::new);
+    /// let c = b.map(|x| x.map(NonZero::get));
     /// assert_eq!(c, Some(a));
     /// ```
     #[unstable(feature = "array_try_map", issue = "79711")]
@@ -559,8 +563,6 @@ impl<T, const N: usize> [T; N] {
     /// # Example
     ///
     /// ```
-    /// #![feature(array_methods)]
-    ///
     /// let floats = [3.1, 2.7, -1.0];
     /// let float_refs: [&f64; 3] = floats.each_ref();
     /// assert_eq!(float_refs, [&3.1, &2.7, &-1.0]);
@@ -571,8 +573,6 @@ impl<T, const N: usize> [T; N] {
     /// array if its elements are not [`Copy`].
     ///
     /// ```
-    /// #![feature(array_methods)]
-    ///
     /// let strings = ["Ferris".to_string(), "♥".to_string(), "Rust".to_string()];
     /// let is_ascii = strings.each_ref().map(|s| s.is_ascii());
     /// assert_eq!(is_ascii, [true, false, true]);
@@ -580,7 +580,7 @@ impl<T, const N: usize> [T; N] {
     /// // We can still access the original array: it has not been moved.
     /// assert_eq!(strings.len(), 3);
     /// ```
-    #[unstable(feature = "array_methods", issue = "76118")]
+    #[stable(feature = "array_methods", since = "1.77.0")]
     pub fn each_ref(&self) -> [&T; N] {
         from_trusted_iterator(self.iter())
     }
@@ -592,7 +592,6 @@ impl<T, const N: usize> [T; N] {
     /// # Example
     ///
     /// ```
-    /// #![feature(array_methods)]
     ///
     /// let mut floats = [3.1, 2.7, -1.0];
     /// let float_refs: [&mut f64; 3] = floats.each_mut();
@@ -600,7 +599,7 @@ impl<T, const N: usize> [T; N] {
     /// assert_eq!(float_refs, [&mut 0.0, &mut 2.7, &mut -1.0]);
     /// assert_eq!(floats, [0.0, 2.7, -1.0]);
     /// ```
-    #[unstable(feature = "array_methods", issue = "76118")]
+    #[stable(feature = "array_methods", since = "1.77.0")]
     pub fn each_mut(&mut self) -> [&mut T; N] {
         from_trusted_iterator(self.iter_mut())
     }
@@ -647,7 +646,7 @@ impl<T, const N: usize> [T; N] {
     )]
     #[inline]
     pub fn split_array_ref<const M: usize>(&self) -> (&[T; M], &[T]) {
-        (&self[..]).split_array_ref::<M>()
+        (&self[..]).split_first_chunk::<M>().unwrap()
     }
 
     /// Divides one mutable array reference into two at an index.
@@ -680,7 +679,7 @@ impl<T, const N: usize> [T; N] {
     )]
     #[inline]
     pub fn split_array_mut<const M: usize>(&mut self) -> (&mut [T; M], &mut [T]) {
-        (&mut self[..]).split_array_mut::<M>()
+        (&mut self[..]).split_first_chunk_mut::<M>().unwrap()
     }
 
     /// Divides one array reference into two at an index from the end.
@@ -725,7 +724,7 @@ impl<T, const N: usize> [T; N] {
     )]
     #[inline]
     pub fn rsplit_array_ref<const M: usize>(&self) -> (&[T], &[T; M]) {
-        (&self[..]).rsplit_array_ref::<M>()
+        (&self[..]).split_last_chunk::<M>().unwrap()
     }
 
     /// Divides one mutable array reference into two at an index from the end.
@@ -758,7 +757,7 @@ impl<T, const N: usize> [T; N] {
     )]
     #[inline]
     pub fn rsplit_array_mut<const M: usize>(&mut self) -> (&mut [T], &mut [T; M]) {
-        (&mut self[..]).rsplit_array_mut::<M>()
+        (&mut self[..]).split_last_chunk_mut::<M>().unwrap()
     }
 }
 
@@ -925,7 +924,7 @@ fn iter_next_chunk_erased<T>(
             // so we need to defuse the guard instead of using `?`.
             let initialized = guard.initialized;
             mem::forget(guard);
-            return Err(initialized)
+            return Err(initialized);
         };
 
         // SAFETY: The loop condition ensures we have space to push the item

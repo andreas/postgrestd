@@ -12,6 +12,7 @@
 use crate::ptr::NonNull;
 use crate::task::Context;
 
+mod async_drop;
 mod future;
 mod into_future;
 mod join;
@@ -36,9 +37,12 @@ pub use ready::{ready, Ready};
 #[stable(feature = "future_poll_fn", since = "1.64.0")]
 pub use poll_fn::{poll_fn, PollFn};
 
+#[unstable(feature = "async_drop", issue = "none")]
+pub use async_drop::{async_drop, async_drop_in_place, AsyncDrop, AsyncDropInPlace};
+
 /// This type is needed because:
 ///
-/// a) Generators cannot implement `for<'a, 'b> Generator<&'a mut Context<'b>>`, so we need to pass
+/// a) Coroutines cannot implement `for<'a, 'b> Coroutine<&'a mut Context<'b>>`, so we need to pass
 ///    a raw pointer (see <https://github.com/rust-lang/rust/issues/68923>).
 /// b) Raw pointers and `NonNull` aren't `Send` or `Sync`, so that would make every single future
 ///    non-Send/Sync as well, and we don't want that.

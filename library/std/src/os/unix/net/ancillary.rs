@@ -3,7 +3,7 @@
 use super::{sockaddr_un, SocketAddr};
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::marker::PhantomData;
-use crate::mem::{size_of, zeroed};
+use crate::mem::zeroed;
 use crate::os::unix::io::RawFd;
 use crate::path::Path;
 use crate::ptr::{eq, read_unaligned};
@@ -20,7 +20,7 @@ use crate::sys::net::Socket;
 ))]
 #[allow(non_camel_case_types)]
 mod libc {
-    pub use libc::c_int;
+    pub use core::ffi::c_int;
     pub struct ucred;
     pub struct cmsghdr;
     pub struct sockcred2;
@@ -34,11 +34,10 @@ pub(super) fn recv_vectored_with_ancillary_from(
     bufs: &mut [IoSliceMut<'_>],
     ancillary: &mut SocketAncillary<'_>,
 ) -> io::Result<(usize, bool, io::Result<SocketAddr>)> {
-    super::bail_if_postgres!();
     unsafe {
         let mut msg_name: libc::sockaddr_un = zeroed();
         let mut msg: libc::msghdr = zeroed();
-        msg.msg_name = &mut msg_name as *mut _ as *mut _;
+        msg.msg_name = core::ptr::addr_of_mut!(msg_name) as *mut _;
         msg.msg_namelen = size_of::<libc::sockaddr_un>() as libc::socklen_t;
         msg.msg_iov = bufs.as_mut_ptr().cast();
         msg.msg_iovlen = bufs.len() as _;
@@ -66,13 +65,12 @@ pub(super) fn send_vectored_with_ancillary_to(
     bufs: &[IoSlice<'_>],
     ancillary: &mut SocketAncillary<'_>,
 ) -> io::Result<usize> {
-    super::bail_if_postgres!();
     unsafe {
         let (mut msg_name, msg_namelen) =
             if let Some(path) = path { sockaddr_un(path)? } else { (zeroed(), 0) };
 
         let mut msg: libc::msghdr = zeroed();
-        msg.msg_name = &mut msg_name as *mut _ as *mut _;
+        msg.msg_name = core::ptr::addr_of_mut!(msg_name) as *mut _;
         msg.msg_namelen = msg_namelen;
         msg.msg_iov = bufs.as_ptr() as *mut _;
         msg.msg_iovlen = bufs.len() as _;
@@ -95,11 +93,6 @@ fn add_to_ancillary_data<T>(
     cmsg_level: libc::c_int,
     cmsg_type: libc::c_int,
 ) -> bool {
-    if cfg!(target_family = "postgres") {
-        // Hmm... This doesn't actually have syscalls in it, but it sure looks
-        // dodgy...
-        return false;
-    }
     #[cfg(not(target_os = "freebsd"))]
     let cmsg_size = source.len().checked_mul(size_of::<T>());
     #[cfg(target_os = "freebsd")]

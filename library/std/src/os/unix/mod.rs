@@ -31,26 +31,14 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 #![doc(cfg(unix))]
 
-#[cfg(target_family = "postgres")]
-#[allow(unused)] // not used on all targets
-macro bail_if_postgres() {
-    // Make this conditional (even though the macro already is) just to avoid
-    // dead code warnings.
-    if cfg!(target_family = "postgres") {
-        return crate::sys::unsupported();
-    }
-}
-// `crate::sys::unsupported()` doesn't exist on non-postgres.
-#[cfg(not(target_family = "postgres"))]
-#[allow(unused)] // not used on all targets
-macro bail_if_postgres() {}
-
 // Use linux as the default platform when documenting on other platforms like Windows
 #[cfg(doc)]
 use crate::os::linux as platform;
 
 #[cfg(not(doc))]
 mod platform {
+    #[cfg(target_os = "aix")]
+    pub use crate::os::aix::*;
     #[cfg(target_os = "android")]
     pub use crate::os::android::*;
     #[cfg(target_os = "dragonfly")]
@@ -67,6 +55,8 @@ mod platform {
     pub use crate::os::haiku::*;
     #[cfg(target_os = "horizon")]
     pub use crate::os::horizon::*;
+    #[cfg(target_os = "hurd")]
+    pub use crate::os::hurd::*;
     #[cfg(target_os = "illumos")]
     pub use crate::os::illumos::*;
     #[cfg(target_os = "ios")]
@@ -89,6 +79,8 @@ mod platform {
     pub use crate::os::solaris::*;
     #[cfg(target_os = "tvos")]
     pub use crate::os::tvos::*;
+    #[cfg(target_os = "visionos")]
+    pub use crate::os::visionos::*;
     #[cfg(target_os = "vita")]
     pub use crate::os::vita::*;
     #[cfg(target_os = "vxworks")]
@@ -100,27 +92,10 @@ mod platform {
 pub mod ffi;
 pub mod fs;
 pub mod io;
-// #[cfg(not(target_family = "postgres"))]
 pub mod net;
 pub mod process;
 pub mod raw;
 pub mod thread;
-
-#[unstable(feature = "peer_credentials_unix_socket", issue = "42839", reason = "unstable")]
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "watchos",
-    target_os = "macos",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "nto",
-))]
-pub mod ucred;
 
 /// A prelude for conveniently writing platform-specific code.
 ///

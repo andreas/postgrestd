@@ -16,11 +16,14 @@
 
 #![unstable(feature = "test", issue = "50297")]
 #![doc(test(attr(deny(warnings))))]
+#![doc(rust_logo)]
+#![feature(rustdoc_internals)]
 #![feature(internal_output_capture)]
 #![feature(staged_api)]
 #![feature(process_exitcode_internals)]
 #![feature(panic_can_unwind)]
 #![feature(test)]
+#![allow(internal_features)]
 
 // Public reexports
 pub use self::bench::{black_box, Bencher};
@@ -82,7 +85,6 @@ mod tests;
 use core::any::Any;
 use event::{CompletedTest, TestEvent};
 use helpers::concurrency::get_concurrency;
-use helpers::exit_code::get_exit_code;
 use helpers::shuffle::{get_shuffle_seed, shuffle_tests};
 use options::RunStrategy;
 use test_result::*;
@@ -137,7 +139,10 @@ pub fn test_main(args: &[String], tests: Vec<TestDescAndFn>, options: Option<Opt
             });
             panic::set_hook(hook);
         }
-        match console::run_tests_console(&opts, tests) {
+        let res = console::run_tests_console(&opts, tests);
+        // Prevent Valgrind from reporting reachable blocks in users' unit tests.
+        drop(panic::take_hook());
+        match res {
             Ok(true) => {}
             Ok(false) => process::exit(ERROR_EXIT_CODE),
             Err(e) => {
@@ -183,8 +188,7 @@ pub fn test_main_static_abort(tests: &[&TestDescAndFn]) {
 
         let test = tests
             .into_iter()
-            .filter(|test| test.desc.name.as_slice() == name)
-            .next()
+            .find(|test| test.desc.name.as_slice() == name)
             .unwrap_or_else(|| panic!("couldn't find a test with the provided name '{name}'"));
         let TestDescAndFn { desc, testfn } = test;
         match testfn.into_runnable() {
@@ -262,8 +266,8 @@ pub fn run_tests<F>(
 where
     F: FnMut(TestEvent) -> io::Result<()>,
 {
-    use std::collections::{self, HashMap};
-    use std::hash::BuildHasherDefault;
+    use std::collections::HashMap;
+    use std::hash::{BuildHasherDefault, DefaultHasher};
     use std::sync::mpsc::RecvTimeoutError;
 
     struct RunningTest {
@@ -284,8 +288,7 @@ where
     }
 
     // Use a deterministic hasher
-    type TestMap =
-        HashMap<TestId, RunningTest, BuildHasherDefault<collections::hash_map::DefaultHasher>>;
+    type TestMap = HashMap<TestId, RunningTest, BuildHasherDefault<DefaultHasher>>;
 
     struct TimeoutEntry {
         id: TestId,
@@ -297,24 +300,18 @@ where
 
     let mut filtered = FilteredTests { tests: Vec::new(), benches: Vec::new(), next_id: 0 };
 
-    for test in filter_tests(opts, tests) {
+    let mut filtered_tests = filter_tests(opts, tests);
+    if !opts.bench_benchmarks {
+        filtered_tests = convert_benchmarks_to_tests(filtered_tests);
+    }
+
+    for test in filtered_tests {
         let mut desc = test.desc;
         desc.name = desc.name.with_padding(test.testfn.padding());
 
         match test.testfn {
-            DynBenchFn(benchfn) => {
-                if opts.bench_benchmarks {
-                    filtered.add_bench(desc, DynBenchFn(benchfn));
-                } else {
-                    filtered.add_test(desc, DynBenchAsTestFn(benchfn));
-                }
-            }
-            StaticBenchFn(benchfn) => {
-                if opts.bench_benchmarks {
-                    filtered.add_bench(desc, StaticBenchFn(benchfn));
-                } else {
-                    filtered.add_test(desc, StaticBenchAsTestFn(benchfn));
-                }
+            DynBenchFn(_) | StaticBenchFn(_) => {
+                filtered.add_bench(desc, test.testfn);
             }
             testfn => {
                 filtered.add_test(desc, testfn);
@@ -545,7 +542,7 @@ pub fn run_test(
 
     // Emscripten can catch panics but other wasm targets cannot
     let ignore_because_no_process_support = desc.should_panic != ShouldPanic::No
-        && cfg!(target_family = "wasm")
+        && (cfg!(target_family = "wasm") || cfg!(target_os = "zkvm"))
         && !cfg!(target_os = "emscripten");
 
     if force_ignore || desc.ignore || ignore_because_no_process_support {
@@ -592,7 +589,9 @@ pub fn run_test(
             // If the platform is single-threaded we're just going to run
             // the test synchronously, regardless of the concurrency
             // level.
-            let supports_threads = !cfg!(target_os = "emscripten") && !cfg!(target_family = "wasm");
+            let supports_threads = !cfg!(target_os = "emscripten")
+                && !cfg!(target_family = "wasm")
+                && !cfg!(target_os = "zkvm");
             if supports_threads {
                 let cfg = thread::Builder::new().name(name.as_slice().to_owned());
                 let mut runtest = Arc::new(Mutex::new(Some(runtest)));
@@ -717,17 +716,7 @@ fn spawn_test_subprocess(
         formatters::write_stderr_delimiter(&mut test_output, &desc.name);
         test_output.extend_from_slice(&stderr);
 
-        let result = match (|| -> Result<TestResult, String> {
-            let exit_code = get_exit_code(status)?;
-            Ok(get_result_from_exit_code(&desc, exit_code, &time_opts, &exec_time))
-        })() {
-            Ok(r) => r,
-            Err(e) => {
-                write!(&mut test_output, "Unexpected error: {e}").unwrap();
-                TrFailed
-            }
-        };
-
+        let result = get_result_from_exit_code(&desc, status, &time_opts, &exec_time);
         (result, test_output, exec_time)
     })();
 
@@ -756,7 +745,7 @@ fn run_test_in_spawned_subprocess(desc: TestDesc, runnable_test: RunnableTest) -
         if let TrOk = test_result {
             process::exit(test_result::TR_OK);
         } else {
-            process::exit(test_result::TR_FAILED);
+            process::abort();
         }
     });
     let record_result2 = record_result.clone();

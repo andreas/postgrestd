@@ -60,8 +60,11 @@ unsafe fn _print_fmt(fmt: &mut fmt::Formatter<'_>, print_fmt: PrintFmt) -> fmt::
     bt_fmt.add_context()?;
     let mut idx = 0;
     let mut res = Ok(());
+    let mut omitted_count: usize = 0;
+    let mut first_omit = true;
     // Start immediately if we're not using a short backtrace.
     let mut start = print_fmt != PrintFmt::Short;
+    set_image_base();
     backtrace_rs::trace_unsynchronized(|frame| {
         if print_fmt == PrintFmt::Short && idx > MAX_NB_FRAMES {
             return false;
@@ -85,10 +88,27 @@ unsafe fn _print_fmt(fmt: &mut fmt::Formatter<'_>, print_fmt: PrintFmt) -> fmt::
                         start = true;
                         return;
                     }
+                    if !start {
+                        omitted_count += 1;
+                    }
                 }
             }
 
             if start {
+                if omitted_count > 0 {
+                    debug_assert!(print_fmt == PrintFmt::Short);
+                    // only print the message between the middle of frames
+                    if !first_omit {
+                        let _ = writeln!(
+                            bt_fmt.formatter(),
+                            "      [... omitted {} frame{} ...]",
+                            omitted_count,
+                            if omitted_count > 1 { "s" } else { "" }
+                        );
+                    }
+                    first_omit = false;
+                    omitted_count = 0;
+                }
                 res = bt_fmt.frame().symbol(frame, symbol);
             }
         });
@@ -193,4 +213,15 @@ pub fn output_filename(
         }
     }
     fmt::Display::fmt(&file.display(), fmt)
+}
+
+#[cfg(all(target_vendor = "fortanix", target_env = "sgx"))]
+pub fn set_image_base() {
+    let image_base = crate::os::fortanix_sgx::mem::image_base();
+    backtrace_rs::set_image_base(crate::ptr::without_provenance_mut(image_base as _));
+}
+
+#[cfg(not(all(target_vendor = "fortanix", target_env = "sgx")))]
+pub fn set_image_base() {
+    // nothing to do for platforms other than SGX
 }

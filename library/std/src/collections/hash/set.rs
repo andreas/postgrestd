@@ -6,11 +6,11 @@ use hashbrown::hash_set as base;
 use crate::borrow::Borrow;
 use crate::collections::TryReserveError;
 use crate::fmt;
-use crate::hash::{BuildHasher, Hash};
+use crate::hash::{BuildHasher, Hash, RandomState};
 use crate::iter::{Chain, FusedIterator};
 use crate::ops::{BitAnd, BitOr, BitXor, Sub};
 
-use super::map::{map_try_reserve_error, RandomState};
+use super::map::map_try_reserve_error;
 
 /// A [hash set] implemented as a `HashMap` where the value is `()`.
 ///
@@ -24,13 +24,14 @@ use super::map::{map_try_reserve_error, RandomState};
 /// ```
 ///
 /// In other words, if two keys are equal, their hashes must be equal.
+/// Violating this property is a logic error.
 ///
-///
-/// It is a logic error for a key to be modified in such a way that the key's
+/// It is also a logic error for a key to be modified in such a way that the key's
 /// hash, as determined by the [`Hash`] trait, or its equality, as determined by
 /// the [`Eq`] trait, changes while it is in the map. This is normally only
 /// possible through [`Cell`], [`RefCell`], global state, I/O, or unsafe code.
-/// The behavior resulting from such a logic error is not specified, but will
+///
+/// The behavior resulting from either logic error is not specified, but will
 /// be encapsulated to the `HashSet` that observed the logic error and not
 /// result in undefined behavior. This could include panics, incorrect results,
 /// aborts, memory leaks, and non-termination.
@@ -65,8 +66,8 @@ use super::map::{map_try_reserve_error, RandomState};
 /// ```
 ///
 /// The easiest way to use `HashSet` with a custom type is to derive
-/// [`Eq`] and [`Hash`]. We must also derive [`PartialEq`], this will in the
-/// future be implied by [`Eq`].
+/// [`Eq`] and [`Hash`]. We must also derive [`PartialEq`],
+/// which is required if [`Eq`] is derived.
 ///
 /// ```
 /// use std::collections::HashSet;
@@ -143,7 +144,7 @@ impl<T> HashSet<T, RandomState> {
     #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn with_capacity(capacity: usize) -> HashSet<T, RandomState> {
-        HashSet { base: base::HashSet::with_capacity_and_hasher(capacity, Default::default()) }
+        HashSet::with_capacity_and_hasher(capacity, Default::default())
     }
 }
 
@@ -360,7 +361,7 @@ impl<T, S> HashSet<T, S> {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// use std::collections::hash_map::RandomState;
+    /// use std::hash::RandomState;
     ///
     /// let s = RandomState::new();
     /// let mut set = HashSet::with_hasher(s);
@@ -392,7 +393,7 @@ impl<T, S> HashSet<T, S> {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// use std::collections::hash_map::RandomState;
+    /// use std::hash::RandomState;
     ///
     /// let s = RandomState::new();
     /// let mut set = HashSet::with_capacity_and_hasher(10, s);
@@ -410,7 +411,7 @@ impl<T, S> HashSet<T, S> {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// use std::collections::hash_map::RandomState;
+    /// use std::hash::RandomState;
     ///
     /// let hasher = RandomState::new();
     /// let set: HashSet<i32> = HashSet::with_hasher(hasher);
@@ -884,6 +885,7 @@ where
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("push", "append", "put")]
     pub fn insert(&mut self, value: T) -> bool {
         self.base.insert(value)
     }
@@ -905,6 +907,7 @@ where
     /// ```
     #[inline]
     #[stable(feature = "set_recovery", since = "1.9.0")]
+    #[rustc_confusables("swap")]
     pub fn replace(&mut self, value: T) -> Option<T> {
         self.base.replace(value)
     }
@@ -929,6 +932,7 @@ where
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("delete", "take")]
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
     where
         T: Borrow<Q>,
@@ -974,6 +978,10 @@ where
         Self { base: self.base.clone() }
     }
 
+    /// Overwrites the contents of `self` with a clone of the contents of `source`.
+    ///
+    /// This method is preferred over simply assigning `source.clone()` to `self`,
+    /// as it avoids reallocation if possible.
     #[inline]
     fn clone_from(&mut self, other: &Self) {
         self.base.clone_from(&other.base);
@@ -1499,6 +1507,18 @@ impl<'a, K> Iterator for Iter<'a, K> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.base.size_hint()
     }
+    #[inline]
+    fn count(self) -> usize {
+        self.base.len()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.base.fold(init, f)
+    }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K> ExactSizeIterator for Iter<'_, K> {
@@ -1529,6 +1549,18 @@ impl<K> Iterator for IntoIter<K> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.base.size_hint()
     }
+    #[inline]
+    fn count(self) -> usize {
+        self.base.len()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.base.fold(init, f)
+    }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K> ExactSizeIterator for IntoIter<K> {
@@ -1558,6 +1590,14 @@ impl<'a, K> Iterator for Drain<'a, K> {
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.base.size_hint()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.base.fold(init, f)
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1638,6 +1678,15 @@ where
         let (_, upper) = self.iter.size_hint();
         (0, upper)
     }
+
+    #[inline]
+    fn fold<B, F>(self, init: B, mut f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, |acc, elt| if self.other.contains(elt) { f(acc, elt) } else { acc })
+    }
 }
 
 #[stable(feature = "std_debug", since = "1.16.0")]
@@ -1690,6 +1739,15 @@ where
         let (_, upper) = self.iter.size_hint();
         (0, upper)
     }
+
+    #[inline]
+    fn fold<B, F>(self, init: B, mut f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, |acc, elt| if self.other.contains(elt) { acc } else { f(acc, elt) })
+    }
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
@@ -1734,6 +1792,14 @@ where
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, f)
     }
 }
 
@@ -1798,6 +1864,18 @@ where
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+    #[inline]
+    fn count(self) -> usize {
+        self.iter.count()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, f)
     }
 }
 

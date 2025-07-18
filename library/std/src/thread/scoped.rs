@@ -47,10 +47,16 @@ impl ScopeData {
         // chance it overflows to 0, which would result in unsoundness.
         if self.num_running_threads.fetch_add(1, Ordering::Relaxed) > usize::MAX / 2 {
             // This can only reasonably happen by mem::forget()'ing a lot of ScopedJoinHandles.
-            self.decrement_num_running_threads(false);
-            panic!("too many running threads in thread scope");
+            self.overflow();
         }
     }
+
+    #[cold]
+    fn overflow(&self) {
+        self.decrement_num_running_threads(false);
+        panic!("too many running threads in thread scope");
+    }
+
     pub(super) fn decrement_num_running_threads(&self, panic: bool) {
         if panic {
             self.a_thread_panicked.store(true, Ordering::Relaxed);
@@ -130,9 +136,6 @@ pub fn scope<'env, F, T>(f: F) -> T
 where
     F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
 {
-    if cfg!(target_family = "postgres") {
-        panic!("threads are not supported in postgrestd");
-    }
     // We put the `ScopeData` into an `Arc` so that other threads can finish their
     // `decrement_num_running_threads` even after this function returns.
     let scope = Scope {
@@ -314,7 +317,7 @@ impl<'scope, T> ScopedJoinHandle<'scope, T> {
     /// Checks if the associated thread has finished running its main function.
     ///
     /// `is_finished` supports implementing a non-blocking join operation, by checking
-    /// `is_finished`, and calling `join` if it returns `false`. This function does not block. To
+    /// `is_finished`, and calling `join` if it returns `true`. This function does not block. To
     /// block while waiting on the thread to finish, use [`join`][Self::join].
     ///
     /// This might return `true` for a brief moment after the thread's main

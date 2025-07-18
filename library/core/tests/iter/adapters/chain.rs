@@ -1,6 +1,14 @@
 use super::*;
 use core::iter::*;
-use core::num::NonZeroUsize;
+use core::num::NonZero;
+
+#[test]
+fn test_chain() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    let ys = [30, 40, 50, 60];
+    let expected = [0, 1, 2, 3, 4, 5, 30, 40, 50, 60];
+    assert_eq!(Vec::from_iter(chain(xs, ys)), expected);
+}
 
 #[test]
 fn test_iterator_chain() {
@@ -34,7 +42,7 @@ fn test_iterator_chain_advance_by() {
             let mut iter = Unfuse::new(xs).chain(Unfuse::new(ys));
             assert_eq!(iter.advance_by(i), Ok(()));
             assert_eq!(iter.next(), Some(&xs[i]));
-            assert_eq!(iter.advance_by(100), Err(NonZeroUsize::new(100 - (len - i - 1)).unwrap()));
+            assert_eq!(iter.advance_by(100), Err(NonZero::new(100 - (len - i - 1)).unwrap()));
             assert_eq!(iter.advance_by(0), Ok(()));
         }
 
@@ -42,7 +50,7 @@ fn test_iterator_chain_advance_by() {
             let mut iter = Unfuse::new(xs).chain(Unfuse::new(ys));
             assert_eq!(iter.advance_by(xs.len() + i), Ok(()));
             assert_eq!(iter.next(), Some(&ys[i]));
-            assert_eq!(iter.advance_by(100), Err(NonZeroUsize::new(100 - (ys.len() - i - 1)).unwrap()));
+            assert_eq!(iter.advance_by(100), Err(NonZero::new(100 - (ys.len() - i - 1)).unwrap()));
             assert_eq!(iter.advance_by(0), Ok(()));
         }
 
@@ -52,7 +60,7 @@ fn test_iterator_chain_advance_by() {
         assert_eq!(iter.advance_by(0), Ok(()));
 
         let mut iter = xs.iter().chain(ys);
-        assert_eq!(iter.advance_by(len + 1), Err(NonZeroUsize::new(1).unwrap()));
+        assert_eq!(iter.advance_by(len + 1), Err(NonZero::new(1).unwrap()));
         assert_eq!(iter.advance_by(0), Ok(()));
     }
 
@@ -71,7 +79,7 @@ fn test_iterator_chain_advance_back_by() {
             let mut iter = Unfuse::new(xs).chain(Unfuse::new(ys));
             assert_eq!(iter.advance_back_by(i), Ok(()));
             assert_eq!(iter.next_back(), Some(&ys[ys.len() - i - 1]));
-            assert_eq!(iter.advance_back_by(100), Err(NonZeroUsize::new(100 - (len - i - 1)).unwrap()));
+            assert_eq!(iter.advance_back_by(100), Err(NonZero::new(100 - (len - i - 1)).unwrap()));
             assert_eq!(iter.advance_back_by(0), Ok(()));
         }
 
@@ -79,7 +87,10 @@ fn test_iterator_chain_advance_back_by() {
             let mut iter = Unfuse::new(xs).chain(Unfuse::new(ys));
             assert_eq!(iter.advance_back_by(ys.len() + i), Ok(()));
             assert_eq!(iter.next_back(), Some(&xs[xs.len() - i - 1]));
-            assert_eq!(iter.advance_back_by(100), Err(NonZeroUsize::new(100 - (xs.len() - i - 1)).unwrap()));
+            assert_eq!(
+                iter.advance_back_by(100),
+                Err(NonZero::new(100 - (xs.len() - i - 1)).unwrap())
+            );
             assert_eq!(iter.advance_back_by(0), Ok(()));
         }
 
@@ -89,7 +100,7 @@ fn test_iterator_chain_advance_back_by() {
         assert_eq!(iter.advance_back_by(0), Ok(()));
 
         let mut iter = xs.iter().chain(ys);
-        assert_eq!(iter.advance_back_by(len + 1), Err(NonZeroUsize::new(1).unwrap()));
+        assert_eq!(iter.advance_back_by(len + 1), Err(NonZero::new(1).unwrap()));
         assert_eq!(iter.advance_back_by(0), Ok(()));
     }
 

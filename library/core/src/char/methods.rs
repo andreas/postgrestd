@@ -1,6 +1,5 @@
 //! impl char {}
 
-use crate::ascii;
 use crate::slice;
 use crate::str::from_utf8_unchecked_mut;
 use crate::unicode::printable::is_printable;
@@ -9,7 +8,57 @@ use crate::unicode::{self, conversions};
 use super::*;
 
 impl char {
+    /// The lowest valid code point a `char` can have, `'\0'`.
+    ///
+    /// Unlike integer types, `char` actually has a gap in the middle,
+    /// meaning that the range of possible `char`s is smaller than you
+    /// might expect. Ranges of `char` will automatically hop this gap
+    /// for you:
+    ///
+    /// ```
+    /// #![feature(char_min)]
+    /// let dist = u32::from(char::MAX) - u32::from(char::MIN);
+    /// let size = (char::MIN..=char::MAX).count() as u32;
+    /// assert!(size < dist);
+    /// ```
+    ///
+    /// Despite this gap, the `MIN` and [`MAX`] values can be used as bounds for
+    /// all `char` values.
+    ///
+    /// [`MAX`]: char::MAX
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(char_min)]
+    /// # fn something_which_returns_char() -> char { 'a' }
+    /// let c: char = something_which_returns_char();
+    /// assert!(char::MIN <= c);
+    ///
+    /// let value_at_min = u32::from(char::MIN);
+    /// assert_eq!(char::from_u32(value_at_min), Some('\0'));
+    /// ```
+    #[unstable(feature = "char_min", issue = "114298")]
+    pub const MIN: char = '\0';
+
     /// The highest valid code point a `char` can have, `'\u{10FFFF}'`.
+    ///
+    /// Unlike integer types, `char` actually has a gap in the middle,
+    /// meaning that the range of possible `char`s is smaller than you
+    /// might expect. Ranges of `char` will automatically hop this gap
+    /// for you:
+    ///
+    /// ```
+    /// #![feature(char_min)]
+    /// let dist = u32::from(char::MAX) - u32::from(char::MIN);
+    /// let size = (char::MIN..=char::MAX).count() as u32;
+    /// assert!(size < dist);
+    /// ```
+    ///
+    /// Despite this gap, the [`MIN`] and `MAX` values can be used as bounds for
+    /// all `char` values.
+    ///
+    /// [`MIN`]: char::MIN
     ///
     /// # Examples
     ///
@@ -18,7 +67,7 @@ impl char {
     /// let c: char = something_which_returns_char();
     /// assert!(c <= char::MAX);
     ///
-    /// let value_at_max = char::MAX as u32;
+    /// let value_at_max = u32::from(char::MAX);
     /// assert_eq!(char::from_u32(value_at_max), Some('\u{10FFFF}'));
     /// assert_eq!(char::from_u32(value_at_max + 1), None);
     /// ```
@@ -400,10 +449,10 @@ impl char {
             '\"' if args.escape_double_quote => EscapeDebug::backslash(ascii::Char::QuotationMark),
             '\'' if args.escape_single_quote => EscapeDebug::backslash(ascii::Char::Apostrophe),
             _ if args.escape_grapheme_extended && self.is_grapheme_extended() => {
-                EscapeDebug::from_unicode(self.escape_unicode())
+                EscapeDebug::unicode(self)
             }
             _ if is_printable(self) => EscapeDebug::printable(self),
-            _ => EscapeDebug::from_unicode(self.escape_unicode()),
+            _ => EscapeDebug::unicode(self),
         }
     }
 
@@ -506,9 +555,9 @@ impl char {
             '\t' => EscapeDefault::backslash(ascii::Char::SmallT),
             '\r' => EscapeDefault::backslash(ascii::Char::SmallR),
             '\n' => EscapeDefault::backslash(ascii::Char::SmallN),
-            '\\' | '\'' | '"' => EscapeDefault::backslash(self.as_ascii().unwrap()),
+            '\\' | '\'' | '\"' => EscapeDefault::backslash(self.as_ascii().unwrap()),
             '\x20'..='\x7e' => EscapeDefault::printable(self.as_ascii().unwrap()),
-            _ => EscapeDefault::from_unicode(self.escape_unicode()),
+            _ => EscapeDefault::unicode(self),
         }
     }
 
@@ -1400,7 +1449,7 @@ impl char {
     #[rustc_const_stable(feature = "const_ascii_ctype_on_intrinsics", since = "1.47.0")]
     #[inline]
     pub const fn is_ascii_alphanumeric(&self) -> bool {
-        matches!(*self, '0'..='9' | 'A'..='Z' | 'a'..='z')
+        matches!(*self, '0'..='9') | matches!(*self, 'A'..='Z') | matches!(*self, 'a'..='z')
     }
 
     /// Checks if the value is an ASCII decimal digit:
@@ -1503,7 +1552,7 @@ impl char {
     #[rustc_const_stable(feature = "const_ascii_ctype_on_intrinsics", since = "1.47.0")]
     #[inline]
     pub const fn is_ascii_hexdigit(&self) -> bool {
-        matches!(*self, '0'..='9' | 'A'..='F' | 'a'..='f')
+        matches!(*self, '0'..='9') | matches!(*self, 'A'..='F') | matches!(*self, 'a'..='f')
     }
 
     /// Checks if the value is an ASCII punctuation character:
@@ -1541,7 +1590,10 @@ impl char {
     #[rustc_const_stable(feature = "const_ascii_ctype_on_intrinsics", since = "1.47.0")]
     #[inline]
     pub const fn is_ascii_punctuation(&self) -> bool {
-        matches!(*self, '!'..='/' | ':'..='@' | '['..='`' | '{'..='~')
+        matches!(*self, '!'..='/')
+            | matches!(*self, ':'..='@')
+            | matches!(*self, '['..='`')
+            | matches!(*self, '{'..='~')
     }
 
     /// Checks if the value is an ASCII graphic character:

@@ -113,9 +113,13 @@ impl<T: Clone, A: Allocator + Clone> Clone for VecDeque<T, A> {
         deq
     }
 
-    fn clone_from(&mut self, other: &Self) {
+    /// Overwrites the contents of `self` with a clone of the contents of `source`.
+    ///
+    /// This method is preferred over simply assigning `source.clone()` to `self`,
+    /// as it avoids reallocation if possible.
+    fn clone_from(&mut self, source: &Self) {
         self.clear();
-        self.extend(other.iter().cloned());
+        self.extend(source.iter().cloned());
     }
 }
 
@@ -485,18 +489,18 @@ impl<T, A: Allocator> VecDeque<T, A> {
         // H := head
         // L := last element (`self.to_physical_idx(self.len - 1)`)
         //
-        //    H           L
-        //   [o o o o o o o . ]
-        //    H           L
-        // A [o o o o o o o . . . . . . . . . ]
+        //    H             L
+        //   [o o o o o o o o ]
+        //    H             L
+        // A [o o o o o o o o . . . . . . . . ]
         //        L H
         //   [o o o o o o o o ]
-        //          H           L
-        // B [. . . o o o o o o o . . . . . . ]
+        //          H             L
+        // B [. . . o o o o o o o o . . . . . ]
         //              L H
         //   [o o o o o o o o ]
-        //            L                   H
-        // C [o o o o o . . . . . . . . . o o ]
+        //              L                 H
+        // C [o o o o o o . . . . . . . . o o ]
 
         // can't use is_contiguous() because the capacity is already updated.
         if self.head <= old_capacity - self.len {
@@ -558,6 +562,30 @@ impl<T> VecDeque<T> {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> VecDeque<T> {
         Self::with_capacity_in(capacity, Global)
+    }
+
+    /// Creates an empty deque with space for at least `capacity` elements.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the capacity exceeds `isize::MAX` _bytes_,
+    /// or if the allocator reports allocation failure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(try_with_capacity)]
+    /// # #[allow(unused)]
+    /// # fn example() -> Result<(), std::collections::TryReserveError> {
+    /// use std::collections::VecDeque;
+    ///
+    /// let deque: VecDeque<u32> = VecDeque::try_with_capacity(10)?;
+    /// # Ok(()) }
+    /// ```
+    #[inline]
+    #[unstable(feature = "try_with_capacity", issue = "91913")]
+    pub fn try_with_capacity(capacity: usize) -> Result<VecDeque<T>, TryReserveError> {
+        Ok(VecDeque { head: 0, len: 0, buf: RawVec::try_with_capacity_in(capacity, Global)? })
     }
 }
 
@@ -954,6 +982,8 @@ impl<T, A: Allocator> VecDeque<T, A> {
         // `head` and `len` are at most `isize::MAX` and `target_cap < self.capacity()`, so nothing can
         // overflow.
         let tail_outside = (target_cap + 1..=self.capacity()).contains(&(self.head + self.len));
+        // Used in the drop guard below.
+        let old_head = self.head;
 
         if self.len == 0 {
             self.head = 0;
@@ -1006,17 +1036,79 @@ impl<T, A: Allocator> VecDeque<T, A> {
             }
             self.head = new_head;
         }
-        self.buf.shrink_to_fit(target_cap);
+
+        struct Guard<'a, T, A: Allocator> {
+            deque: &'a mut VecDeque<T, A>,
+            old_head: usize,
+            target_cap: usize,
+        }
+
+        impl<T, A: Allocator> Drop for Guard<'_, T, A> {
+            #[cold]
+            fn drop(&mut self) {
+                unsafe {
+                    // SAFETY: This is only called if `buf.shrink_to_fit` unwinds,
+                    // which is the only time it's safe to call `abort_shrink`.
+                    self.deque.abort_shrink(self.old_head, self.target_cap)
+                }
+            }
+        }
+
+        let guard = Guard { deque: self, old_head, target_cap };
+
+        guard.deque.buf.shrink_to_fit(target_cap);
+
+        // Don't drop the guard if we didn't unwind.
+        mem::forget(guard);
 
         debug_assert!(self.head < self.capacity() || self.capacity() == 0);
         debug_assert!(self.len <= self.capacity());
     }
 
+    /// Reverts the deque back into a consistent state in case `shrink_to` failed.
+    /// This is necessary to prevent UB if the backing allocator returns an error
+    /// from `shrink` and `handle_alloc_error` subsequently unwinds (see #123369).
+    ///
+    /// `old_head` refers to the head index before `shrink_to` was called. `target_cap`
+    /// is the capacity that it was trying to shrink to.
+    unsafe fn abort_shrink(&mut self, old_head: usize, target_cap: usize) {
+        // Moral equivalent of self.head + self.len <= target_cap. Won't overflow
+        // because `self.len <= target_cap`.
+        if self.head <= target_cap - self.len {
+            // The deque's buffer is contiguous, so no need to copy anything around.
+            return;
+        }
+
+        // `shrink_to` already copied the head to fit into the new capacity, so this won't overflow.
+        let head_len = target_cap - self.head;
+        // `self.head > target_cap - self.len` => `self.len > target_cap - self.head =: head_len` so this must be positive.
+        let tail_len = self.len - head_len;
+
+        if tail_len <= cmp::min(head_len, self.capacity() - target_cap) {
+            // There's enough spare capacity to copy the tail to the back (because `tail_len < self.capacity() - target_cap`),
+            // and copying the tail should be cheaper than copying the head (because `tail_len <= head_len`).
+
+            unsafe {
+                // The old tail and the new tail can't overlap because the head slice lies between them. The
+                // head slice ends at `target_cap`, so that's where we copy to.
+                self.copy_nonoverlapping(0, target_cap, tail_len);
+            }
+        } else {
+            // Either there's not enough spare capacity to make the deque contiguous, or the head is shorter than the tail
+            // (and therefore hopefully cheaper to copy).
+            unsafe {
+                // The old and the new head slice can overlap, so we can't use `copy_nonoverlapping` here.
+                self.copy(self.head, old_head, head_len);
+                self.head = old_head;
+            }
+        }
+    }
+
     /// Shortens the deque, keeping the first `len` elements and dropping
     /// the rest.
     ///
-    /// If `len` is greater than the deque's current length, this has no
-    /// effect.
+    /// If `len` is greater or equal to the deque's current length, this has
+    /// no effect.
     ///
     /// # Examples
     ///
@@ -1209,6 +1301,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(deque.len(), 1);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("length", "size")]
     pub fn len(&self) -> usize {
         self.len
     }
@@ -1491,6 +1584,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(d.front(), Some(&1));
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("first")]
     pub fn front(&self) -> Option<&T> {
         self.get(0)
     }
@@ -1535,6 +1629,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(d.back(), Some(&2));
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("last")]
     pub fn back(&self) -> Option<&T> {
         self.get(self.len.wrapping_sub(1))
     }
@@ -1587,7 +1682,10 @@ impl<T, A: Allocator> VecDeque<T, A> {
             let old_head = self.head;
             self.head = self.to_physical_idx(1);
             self.len -= 1;
-            Some(unsafe { self.buffer_read(old_head) })
+            unsafe {
+                core::hint::assert_unchecked(self.len < self.capacity());
+                Some(self.buffer_read(old_head))
+            }
         }
     }
 
@@ -1611,7 +1709,10 @@ impl<T, A: Allocator> VecDeque<T, A> {
             None
         } else {
             self.len -= 1;
-            Some(unsafe { self.buffer_read(self.to_physical_idx(self.len)) })
+            unsafe {
+                core::hint::assert_unchecked(self.len < self.capacity());
+                Some(self.buffer_read(self.to_physical_idx(self.len)))
+            }
         }
     }
 
@@ -1654,6 +1755,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(3, *buf.back().unwrap());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("push", "put", "append")]
     pub fn push_back(&mut self, value: T) {
         if self.is_full() {
             self.grow();
@@ -1813,6 +1915,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(buf, [1, 3]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("delete", "take")]
     pub fn remove(&mut self, index: usize) -> Option<T> {
         if self.len <= index {
             return None;
@@ -2058,7 +2161,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
         // buffer without it being full emerge
         debug_assert!(self.is_full());
         let old_cap = self.capacity();
-        self.buf.reserve_for_push(old_cap);
+        self.buf.grow_one();
         unsafe {
             self.handle_capacity_increase(old_cap);
         }
@@ -2283,21 +2386,21 @@ impl<T, A: Allocator> VecDeque<T, A> {
         unsafe { slice::from_raw_parts_mut(ptr.add(self.head), self.len) }
     }
 
-    /// Rotates the double-ended queue `mid` places to the left.
+    /// Rotates the double-ended queue `n` places to the left.
     ///
     /// Equivalently,
-    /// - Rotates item `mid` into the first position.
-    /// - Pops the first `mid` items and pushes them to the end.
-    /// - Rotates `len() - mid` places to the right.
+    /// - Rotates item `n` into the first position.
+    /// - Pops the first `n` items and pushes them to the end.
+    /// - Rotates `len() - n` places to the right.
     ///
     /// # Panics
     ///
-    /// If `mid` is greater than `len()`. Note that `mid == len()`
+    /// If `n` is greater than `len()`. Note that `n == len()`
     /// does _not_ panic and is a no-op rotation.
     ///
     /// # Complexity
     ///
-    /// Takes `*O*(min(mid, len() - mid))` time and no extra space.
+    /// Takes `*O*(min(n, len() - n))` time and no extra space.
     ///
     /// # Examples
     ///
@@ -2316,31 +2419,31 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     /// ```
     #[stable(feature = "vecdeque_rotate", since = "1.36.0")]
-    pub fn rotate_left(&mut self, mid: usize) {
-        assert!(mid <= self.len());
-        let k = self.len - mid;
-        if mid <= k {
-            unsafe { self.rotate_left_inner(mid) }
+    pub fn rotate_left(&mut self, n: usize) {
+        assert!(n <= self.len());
+        let k = self.len - n;
+        if n <= k {
+            unsafe { self.rotate_left_inner(n) }
         } else {
             unsafe { self.rotate_right_inner(k) }
         }
     }
 
-    /// Rotates the double-ended queue `k` places to the right.
+    /// Rotates the double-ended queue `n` places to the right.
     ///
     /// Equivalently,
-    /// - Rotates the first item into position `k`.
-    /// - Pops the last `k` items and pushes them to the front.
-    /// - Rotates `len() - k` places to the left.
+    /// - Rotates the first item into position `n`.
+    /// - Pops the last `n` items and pushes them to the front.
+    /// - Rotates `len() - n` places to the left.
     ///
     /// # Panics
     ///
-    /// If `k` is greater than `len()`. Note that `k == len()`
+    /// If `n` is greater than `len()`. Note that `n == len()`
     /// does _not_ panic and is a no-op rotation.
     ///
     /// # Complexity
     ///
-    /// Takes `*O*(min(k, len() - k))` time and no extra space.
+    /// Takes `*O*(min(n, len() - n))` time and no extra space.
     ///
     /// # Examples
     ///
@@ -2359,13 +2462,13 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     /// ```
     #[stable(feature = "vecdeque_rotate", since = "1.36.0")]
-    pub fn rotate_right(&mut self, k: usize) {
-        assert!(k <= self.len());
-        let mid = self.len - k;
-        if k <= mid {
-            unsafe { self.rotate_right_inner(k) }
+    pub fn rotate_right(&mut self, n: usize) {
+        assert!(n <= self.len());
+        let k = self.len - n;
+        if n <= k {
+            unsafe { self.rotate_right_inner(n) }
         } else {
-            unsafe { self.rotate_left_inner(mid) }
+            unsafe { self.rotate_left_inner(k) }
         }
     }
 
@@ -2435,8 +2538,10 @@ impl<T, A: Allocator> VecDeque<T, A> {
     ///
     /// let mut deque: VecDeque<_> = [0, 1, 1, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55].into();
     /// let num = 42;
-    /// let idx = deque.partition_point(|&x| x < num);
-    /// // The above is equivalent to `let idx = deque.binary_search(&num).unwrap_or_else(|x| x);`
+    /// let idx = deque.partition_point(|&x| x <= num);
+    /// // If `num` is unique, `s.partition_point(|&x| x < num)` (with `<`) is equivalent to
+    /// // `s.binary_search(&num).unwrap_or_else(|x| x)`, but using `<=` may allow `insert`
+    /// // to shift less elements.
     /// deque.insert(idx, num);
     /// assert_eq!(deque, &[0, 1, 1, 1, 1, 2, 3, 5, 8, 13, 21, 34, 42, 55]);
     /// ```

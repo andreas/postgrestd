@@ -45,25 +45,29 @@
 //! that make working with it more succinct.
 //!
 //! ```
+//! // The `is_ok` and `is_err` methods do what they say.
 //! let good_result: Result<i32, i32> = Ok(10);
 //! let bad_result: Result<i32, i32> = Err(10);
-//!
-//! // The `is_ok` and `is_err` methods do what they say.
 //! assert!(good_result.is_ok() && !good_result.is_err());
 //! assert!(bad_result.is_err() && !bad_result.is_ok());
 //!
-//! // `map` consumes the `Result` and produces another.
+//! // `map` and `map_err` consume the `Result` and produce another.
 //! let good_result: Result<i32, i32> = good_result.map(|i| i + 1);
-//! let bad_result: Result<i32, i32> = bad_result.map(|i| i - 1);
+//! let bad_result: Result<i32, i32> = bad_result.map_err(|i| i - 1);
+//! assert_eq!(good_result, Ok(11));
+//! assert_eq!(bad_result, Err(9));
 //!
 //! // Use `and_then` to continue the computation.
 //! let good_result: Result<bool, i32> = good_result.and_then(|i| Ok(i == 11));
+//! assert_eq!(good_result, Ok(true));
 //!
 //! // Use `or_else` to handle the error.
 //! let bad_result: Result<i32, i32> = bad_result.or_else(|i| Ok(i + 20));
+//! assert_eq!(bad_result, Ok(29));
 //!
 //! // Consume the result and return the contents with `unwrap`.
 //! let final_awesome_result = good_result.unwrap();
+//! assert!(final_awesome_result)
 //! ```
 //!
 //! # Results must be used
@@ -223,6 +227,27 @@
 //! [`Ok(T)`]: Ok
 //! [`Err(E)`]: Err
 //! [io::Error]: ../../std/io/struct.Error.html "io::Error"
+//!
+//! # Representation
+//!
+//! In some cases, [`Result<T, E>`] will gain the same size, alignment, and ABI
+//! guarantees as [`Option<U>`] has. One of either the `T` or `E` type must be a
+//! type that qualifies for the `Option` [representation guarantees][opt-rep],
+//! and the *other* type must meet all of the following conditions:
+//! * Is a zero-sized type with alignment 1 (a "1-ZST").
+//! * Has no fields.
+//! * Does not have the `#[non_exhaustive]` attribute.
+//!
+//! For example, `NonZeroI32` qualifies for the `Option` representation
+//! guarantees, and `()` is a zero-sized type with alignment 1, no fields, and
+//! it isn't `non_exhaustive`. This means that both `Result<NonZeroI32, ()>` and
+//! `Result<(), NonZeroI32>` have the same size, alignment, and ABI guarantees
+//! as `Option<NonZeroI32>`. The only difference is the implied semantics:
+//! * `Option<NonZeroI32>` is "a non-zero i32 might be present"
+//! * `Result<NonZeroI32, ()>` is "a non-zero i32 success result, if any"
+//! * `Result<(), NonZeroI32>` is "a non-zero i32 error result, if any"
+//!
+//! [opt-rep]: ../option/index.html#representation "Option Representation"
 //!
 //! # Method overview
 //!
@@ -488,7 +513,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use crate::iter::{self, FromIterator, FusedIterator, TrustedLen};
+use crate::iter::{self, FusedIterator, TrustedLen};
 use crate::ops::{self, ControlFlow, Deref, DerefMut};
 use crate::{convert, fmt, hint};
 
@@ -749,7 +774,7 @@ impl<T, E> Result<T, E> {
     }
 
     /// Returns the provided default (if [`Err`]), or
-    /// applies a function to the contained value (if [`Ok`]),
+    /// applies a function to the contained value (if [`Ok`]).
     ///
     /// Arguments passed to `map_or` are eagerly evaluated; if you are passing
     /// the result of a function call, it is recommended to use [`map_or_else`],
@@ -768,6 +793,7 @@ impl<T, E> Result<T, E> {
     /// ```
     #[inline]
     #[stable(feature = "result_map_or", since = "1.41.0")]
+    #[must_use = "if you don't need the returned value, use `if let` instead"]
     pub fn map_or<U, F: FnOnce(T) -> U>(self, default: U, f: F) -> U {
         match self {
             Ok(t) => f(t),
@@ -829,13 +855,13 @@ impl<T, E> Result<T, E> {
         }
     }
 
-    /// Calls the provided closure with a reference to the contained value (if [`Ok`]).
+    /// Calls a function with a reference to the contained value if [`Ok`].
+    ///
+    /// Returns the original result.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(result_option_inspect)]
-    ///
     /// let x: u8 = "4"
     ///     .parse::<u8>()
     ///     .inspect(|x| println!("original: {x}"))
@@ -843,7 +869,7 @@ impl<T, E> Result<T, E> {
     ///     .expect("failed to parse number");
     /// ```
     #[inline]
-    #[unstable(feature = "result_option_inspect", issue = "91345")]
+    #[stable(feature = "result_option_inspect", since = "1.76.0")]
     pub fn inspect<F: FnOnce(&T)>(self, f: F) -> Self {
         if let Ok(ref t) = self {
             f(t);
@@ -852,13 +878,13 @@ impl<T, E> Result<T, E> {
         self
     }
 
-    /// Calls the provided closure with a reference to the contained error (if [`Err`]).
+    /// Calls a function with a reference to the contained value if [`Err`].
+    ///
+    /// Returns the original result.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(result_option_inspect)]
-    ///
     /// use std::{fs, io};
     ///
     /// fn read() -> io::Result<String> {
@@ -867,7 +893,7 @@ impl<T, E> Result<T, E> {
     /// }
     /// ```
     #[inline]
-    #[unstable(feature = "result_option_inspect", issue = "91345")]
+    #[stable(feature = "result_option_inspect", since = "1.76.0")]
     pub fn inspect_err<F: FnOnce(&E)>(self, f: F) -> Self {
         if let Err(ref e) = self {
             f(e);
@@ -1064,7 +1090,7 @@ impl<T, E> Result<T, E> {
     /// let x: Result<u32, &str> = Err("emergency failure");
     /// x.unwrap(); // panics with `emergency failure`
     /// ```
-    #[inline]
+    #[inline(always)]
     #[track_caller]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn unwrap(self) -> T
@@ -1314,6 +1340,7 @@ impl<T, E> Result<T, E> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("flat_map", "flatmap")]
     pub fn and_then<U, F: FnOnce(T) -> Result<U, E>>(self, op: F) -> Result<U, E> {
         match self {
             Ok(t) => op(t),
@@ -1421,6 +1448,7 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(Err("foo").unwrap_or_else(count), 3);
     /// ```
     #[inline]
+    #[track_caller]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn unwrap_or_else<F: FnOnce(E) -> T>(self, op: F) -> T {
         match self {

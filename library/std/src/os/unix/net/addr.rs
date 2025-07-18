@@ -11,7 +11,7 @@ use crate::{fmt, io, mem, ptr};
 #[cfg(not(unix))]
 #[allow(non_camel_case_types)]
 mod libc {
-    pub use libc::c_int;
+    pub use core::ffi::c_int;
     pub type socklen_t = u32;
     pub struct sockaddr;
     #[derive(Clone)]
@@ -21,12 +21,11 @@ mod libc {
 fn sun_path_offset(addr: &libc::sockaddr_un) -> usize {
     // Work with an actual instance of the type since using a null pointer is UB
     let base = (addr as *const libc::sockaddr_un).addr();
-    let path = (&addr.sun_path as *const libc::c_char).addr();
+    let path = core::ptr::addr_of!(addr.sun_path).addr();
     path - base
 }
 
 pub(super) fn sockaddr_un(path: &Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
-    super::bail_if_postgres!();
     // SAFETY: All zeros is a valid representation for `sockaddr_un`.
     let mut addr: libc::sockaddr_un = unsafe { mem::zeroed() };
     addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
@@ -96,11 +95,10 @@ impl SocketAddr {
     where
         F: FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> libc::c_int,
     {
-        super::bail_if_postgres!();
         unsafe {
             let mut addr: libc::sockaddr_un = mem::zeroed();
             let mut len = mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-            cvt(f(&mut addr as *mut _ as *mut _, &mut len))?;
+            cvt(f(core::ptr::addr_of_mut!(addr) as *mut _, &mut len))?;
             SocketAddr::from_parts(addr, len)
         }
     }
@@ -109,7 +107,16 @@ impl SocketAddr {
         addr: libc::sockaddr_un,
         mut len: libc::socklen_t,
     ) -> io::Result<SocketAddr> {
-        super::bail_if_postgres!();
+        if cfg!(target_os = "openbsd") {
+            // on OpenBSD, getsockname(2) returns the actual size of the socket address,
+            // and not the len of the content. Figure out the length for ourselves.
+            // https://marc.info/?l=openbsd-bugs&m=170105481926736&w=2
+            let sun_path: &[u8] =
+                unsafe { mem::transmute::<&[libc::c_char], &[u8]>(&addr.sun_path) };
+            len = core::slice::memchr::memchr(0, sun_path)
+                .map_or(len, |new_len| (new_len + sun_path_offset(&addr)) as libc::socklen_t);
+        }
+
         if len == 0 {
             // When there is a datagram from unnamed unix socket
             // linux returns zero bytes of address
@@ -227,11 +234,7 @@ impl SocketAddr {
     #[stable(feature = "unix_socket", since = "1.10.0")]
     #[must_use]
     pub fn as_pathname(&self) -> Option<&Path> {
-        if let AddressKind::Pathname(path) = self.address() {
-            Some(path)
-        } else {
-            None
-        }
+        if let AddressKind::Pathname(path) = self.address() { Some(path) } else { None }
     }
 
     fn address(&self) -> AddressKind<'_> {
@@ -260,18 +263,13 @@ impl Sealed for SocketAddr {}
 #[stable(feature = "unix_socket_abstract", since = "1.70.0")]
 impl linux_ext::addr::SocketAddrExt for SocketAddr {
     fn as_abstract_name(&self) -> Option<&[u8]> {
-        if let AddressKind::Abstract(name) = self.address() {
-            Some(name)
-        } else {
-            None
-        }
+        if let AddressKind::Abstract(name) = self.address() { Some(name) } else { None }
     }
 
     fn from_abstract_name<N>(name: N) -> crate::io::Result<Self>
     where
         N: AsRef<[u8]>,
     {
-        super::bail_if_postgres!();
         let name = name.as_ref();
         unsafe {
             let mut addr: libc::sockaddr_un = mem::zeroed();

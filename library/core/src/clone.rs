@@ -86,6 +86,46 @@
 /// }
 /// ```
 ///
+/// If we `derive`:
+///
+/// ```
+/// #[derive(Copy, Clone)]
+/// struct Generate<T>(fn() -> T);
+/// ```
+///
+/// the auto-derived implementations will have unnecessary `T: Copy` and `T: Clone` bounds:
+///
+/// ```
+/// # struct Generate<T>(fn() -> T);
+///
+/// // Automatically derived
+/// impl<T: Copy> Copy for Generate<T> { }
+///
+/// // Automatically derived
+/// impl<T: Clone> Clone for Generate<T> {
+///     fn clone(&self) -> Generate<T> {
+///         Generate(Clone::clone(&self.0))
+///     }
+/// }
+/// ```
+///
+/// The bounds are unnecessary because clearly the function itself should be
+/// copy- and cloneable even if its return type is not:
+///
+/// ```compile_fail,E0599
+/// #[derive(Copy, Clone)]
+/// struct Generate<T>(fn() -> T);
+///
+/// struct NotCloneable;
+///
+/// fn generate_not_cloneable() -> NotCloneable {
+///     NotCloneable
+/// }
+///
+/// Generate(generate_not_cloneable).clone(); // error: trait bounds were not satisfied
+/// // Note: With the manual implementations the above line will compile.
+/// ```
+///
 /// ## Additional implementors
 ///
 /// In addition to the [implementors listed below][impls],
@@ -170,8 +210,6 @@ pub struct AssertParamIsCopy<T: Copy + ?Sized> {
 /// are implemented in `traits::SelectionContext::copy_clone_conditions()`
 /// in `rustc_trait_selection`.
 mod impls {
-    use super::Clone;
-
     macro_rules! impl_clone {
         ($($t:ty)*) => {
             $(
@@ -189,7 +227,7 @@ mod impls {
     impl_clone! {
         usize u8 u16 u32 u64 u128
         isize i8 i16 i32 i64 i128
-        f32 f64
+        f16 f32 f64 f128
         bool char
     }
 

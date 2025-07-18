@@ -4,9 +4,9 @@
 
 use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
-use core::ops::Deref;
 #[cfg(not(no_global_oom_handling))]
 use core::ops::{Add, AddAssign};
+use core::ops::{Deref, DerefPure};
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::borrow::{Borrow, BorrowMut};
@@ -55,6 +55,7 @@ pub trait ToOwned {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[must_use = "cloning is often expensive and is not expected to have side effects"]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "to_owned_method")]
     fn to_owned(&self) -> Self::Owned;
 
     /// Uses borrowed data to replace owned data, usually by cloning.
@@ -341,6 +342,9 @@ where
         }
     }
 }
+
+#[unstable(feature = "deref_pure_trait", issue = "87121")]
+unsafe impl<B: ?Sized + ToOwned> DerefPure for Cow<'_, B> where B::Owned: Borrow<B> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<B: ?Sized> Eq for Cow<'_, B> where B: Eq + ToOwned {}

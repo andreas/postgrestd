@@ -13,7 +13,7 @@ pub use NamePadding::*;
 pub use TestFn::*;
 pub use TestName::*;
 
-/// Type of the test according to the [rust book](https://doc.rust-lang.org/cargo/guide/tests.html)
+/// Type of the test according to the [Rust book](https://doc.rust-lang.org/cargo/guide/tests.html)
 /// conventions.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TestType {
@@ -224,7 +224,7 @@ impl TestDesc {
         }
     }
 
-    /// Returns None for ignored test or that that are just run, otherwise give a description of the type of test.
+    /// Returns None for ignored test or tests that are just run, otherwise returns a description of the type of test.
     /// Descriptions include "should panic", "compile fail" and "compile".
     pub fn test_mode(&self) -> Option<&'static str> {
         if self.ignore {

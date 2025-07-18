@@ -4,18 +4,20 @@
 mod macros;
 
 use crate::cmp;
-use crate::cmp::Ordering;
 use crate::fmt;
-use crate::intrinsics::assume;
+use crate::hint::assert_unchecked;
 use crate::iter::{
     FusedIterator, TrustedLen, TrustedRandomAccess, TrustedRandomAccessNoCoerce, UncheckedIterator,
 };
-use crate::marker::{PhantomData, Send, Sized, Sync};
+use crate::marker::PhantomData;
 use crate::mem::{self, SizedTypeProperties};
-use crate::num::NonZeroUsize;
-use crate::ptr::{invalid, invalid_mut, NonNull};
+use crate::num::NonZero;
+use crate::ptr::{self, without_provenance, without_provenance_mut, NonNull};
 
 use super::{from_raw_parts, from_raw_parts_mut};
+
+#[stable(feature = "boxed_slice_into_iter", since = "1.80.0")]
+impl<T> !Iterator for [T] {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> IntoIterator for &'a [T] {
@@ -59,6 +61,7 @@ impl<'a, T> IntoIterator for &'a mut [T] {
 /// [slices]: slice
 #[stable(feature = "rust1", since = "1.0.0")]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
+#[rustc_diagnostic_item = "SliceIter"]
 pub struct Iter<'a, T: 'a> {
     /// The pointer to the next element to return, or the past-the-end location
     /// if the iterator is empty.
@@ -67,8 +70,8 @@ pub struct Iter<'a, T: 'a> {
     ptr: NonNull<T>,
     /// For non-ZSTs, the non-null pointer to the past-the-end element.
     ///
-    /// For ZSTs, this is `ptr::invalid(len)`.
-    end: *const T,
+    /// For ZSTs, this is `ptr::dangling(len)`.
+    end_or_len: *const T,
     _marker: PhantomData<&'a T>,
 }
 
@@ -87,12 +90,14 @@ unsafe impl<T: Sync> Send for Iter<'_, T> {}
 impl<'a, T> Iter<'a, T> {
     #[inline]
     pub(super) fn new(slice: &'a [T]) -> Self {
-        let ptr = slice.as_ptr();
+        let len = slice.len();
+        let ptr: NonNull<T> = NonNull::from(slice).cast();
         // SAFETY: Similar to `IterMut::new`.
         unsafe {
-            let end = if T::IS_ZST { invalid(slice.len()) } else { ptr.add(slice.len()) };
+            let end_or_len =
+                if T::IS_ZST { without_provenance(len) } else { ptr.as_ptr().add(len) };
 
-            Self { ptr: NonNull::new_unchecked(ptr as *mut T), end, _marker: PhantomData }
+            Self { ptr, end_or_len, _marker: PhantomData }
         }
     }
 
@@ -128,11 +133,11 @@ impl<'a, T> Iter<'a, T> {
     }
 }
 
-iterator! {struct Iter -> *const T, &'a T, const, {/* no mut */}, {
+iterator! {struct Iter -> *const T, &'a T, const, {/* no mut */}, as_ref, {
     fn is_sorted_by<F>(self, mut compare: F) -> bool
     where
         Self: Sized,
-        F: FnMut(&Self::Item, &Self::Item) -> Option<Ordering>,
+        F: FnMut(&Self::Item, &Self::Item) -> bool,
     {
         self.as_slice().is_sorted_by(|a, b| compare(&a, &b))
     }
@@ -142,7 +147,7 @@ iterator! {struct Iter -> *const T, &'a T, const, {/* no mut */}, {
 impl<T> Clone for Iter<'_, T> {
     #[inline]
     fn clone(&self) -> Self {
-        Iter { ptr: self.ptr, end: self.end, _marker: self._marker }
+        Iter { ptr: self.ptr, end_or_len: self.end_or_len, _marker: self._marker }
     }
 }
 
@@ -188,8 +193,8 @@ pub struct IterMut<'a, T: 'a> {
     ptr: NonNull<T>,
     /// For non-ZSTs, the non-null pointer to the past-the-end element.
     ///
-    /// For ZSTs, this is `ptr::invalid_mut(len)`.
-    end: *mut T,
+    /// For ZSTs, this is `ptr::without_provenance_mut(len)`.
+    end_or_len: *mut T,
     _marker: PhantomData<&'a mut T>,
 }
 
@@ -208,7 +213,8 @@ unsafe impl<T: Send> Send for IterMut<'_, T> {}
 impl<'a, T> IterMut<'a, T> {
     #[inline]
     pub(super) fn new(slice: &'a mut [T]) -> Self {
-        let ptr = slice.as_mut_ptr();
+        let len = slice.len();
+        let ptr: NonNull<T> = NonNull::from(slice).cast();
         // SAFETY: There are several things here:
         //
         // `ptr` has been obtained by `slice.as_ptr()` where `slice` is a valid
@@ -220,15 +226,16 @@ impl<'a, T> IterMut<'a, T> {
         // for direct pointer equality with `ptr` to check if the iterator is
         // done.
         //
-        // In the case of a ZST, the end pointer is just the start pointer plus
-        // the length, to also allows for the fast `ptr == end` check.
+        // In the case of a ZST, the end pointer is just the length.  It's never
+        // used as a pointer at all, and thus it's fine to have no provenance.
         //
         // See the `next_unchecked!` and `is_empty!` macros as well as the
         // `post_inc_start` method for more information.
         unsafe {
-            let end = if T::IS_ZST { invalid_mut(slice.len()) } else { ptr.add(slice.len()) };
+            let end_or_len =
+                if T::IS_ZST { without_provenance_mut(len) } else { ptr.as_ptr().add(len) };
 
-            Self { ptr: NonNull::new_unchecked(ptr), end, _marker: PhantomData }
+            Self { ptr, end_or_len, _marker: PhantomData }
         }
     }
 
@@ -360,7 +367,7 @@ impl<T> AsRef<[T]> for IterMut<'_, T> {
 //     }
 // }
 
-iterator! {struct IterMut -> *mut T, &'a mut T, mut, {mut}, {}}
+iterator! {struct IterMut -> *mut T, &'a mut T, mut, {mut}, as_mut, {}}
 
 /// An internal abstraction over the splitting iterators, so that
 /// splitn, splitn_mut etc can be implemented once.
@@ -456,8 +463,12 @@ where
         match self.v.iter().position(|x| (self.pred)(x)) {
             None => self.finish(),
             Some(idx) => {
-                let ret = Some(&self.v[..idx]);
-                self.v = &self.v[idx + 1..];
+                let (left, right) =
+                    // SAFETY: if v.iter().position returns Some(idx), that
+                    // idx is definitely a valid index for v
+                    unsafe { (self.v.get_unchecked(..idx), self.v.get_unchecked(idx + 1..)) };
+                let ret = Some(left);
+                self.v = right;
                 ret
             }
         }
@@ -489,8 +500,12 @@ where
         match self.v.iter().rposition(|x| (self.pred)(x)) {
             None => self.finish(),
             Some(idx) => {
-                let ret = Some(&self.v[idx + 1..]);
-                self.v = &self.v[..idx];
+                let (left, right) =
+                    // SAFETY: if v.iter().rposition returns Some(idx), then
+                    // idx is definitely a valid index for v
+                    unsafe { (self.v.get_unchecked(..idx), self.v.get_unchecked(idx + 1..)) };
+                let ret = Some(right);
+                self.v = left;
                 ret
             }
         }
@@ -1295,12 +1310,12 @@ forward_iterator! { RSplitNMut: T, &'a mut [T] }
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub struct Windows<'a, T: 'a> {
     v: &'a [T],
-    size: NonZeroUsize,
+    size: NonZero<usize>,
 }
 
 impl<'a, T: 'a> Windows<'a, T> {
     #[inline]
-    pub(super) fn new(slice: &'a [T], size: NonZeroUsize) -> Self {
+    pub(super) fn new(slice: &'a [T], size: NonZero<usize>) -> Self {
         Self { v: slice, size }
     }
 }
@@ -3239,26 +3254,26 @@ unsafe impl<'a, T> TrustedRandomAccessNoCoerce for IterMut<'a, T> {
 
 /// An iterator over slice in (non-overlapping) chunks separated by a predicate.
 ///
-/// This struct is created by the [`group_by`] method on [slices].
+/// This struct is created by the [`chunk_by`] method on [slices].
 ///
-/// [`group_by`]: slice::group_by
+/// [`chunk_by`]: slice::chunk_by
 /// [slices]: slice
-#[unstable(feature = "slice_group_by", issue = "80552")]
+#[stable(feature = "slice_group_by", since = "1.77.0")]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
-pub struct GroupBy<'a, T: 'a, P> {
+pub struct ChunkBy<'a, T: 'a, P> {
     slice: &'a [T],
     predicate: P,
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> GroupBy<'a, T, P> {
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> ChunkBy<'a, T, P> {
     pub(super) fn new(slice: &'a [T], predicate: P) -> Self {
-        GroupBy { slice, predicate }
+        ChunkBy { slice, predicate }
     }
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> Iterator for GroupBy<'a, T, P>
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> Iterator for ChunkBy<'a, T, P>
 where
     P: FnMut(&T, &T) -> bool,
 {
@@ -3291,8 +3306,8 @@ where
     }
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> DoubleEndedIterator for GroupBy<'a, T, P>
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> DoubleEndedIterator for ChunkBy<'a, T, P>
 where
     P: FnMut(&T, &T) -> bool,
 {
@@ -3313,39 +3328,39 @@ where
     }
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> FusedIterator for GroupBy<'a, T, P> where P: FnMut(&T, &T) -> bool {}
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> FusedIterator for ChunkBy<'a, T, P> where P: FnMut(&T, &T) -> bool {}
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a + fmt::Debug, P> fmt::Debug for GroupBy<'a, T, P> {
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a + fmt::Debug, P> fmt::Debug for ChunkBy<'a, T, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupBy").field("slice", &self.slice).finish()
+        f.debug_struct("ChunkBy").field("slice", &self.slice).finish()
     }
 }
 
 /// An iterator over slice in (non-overlapping) mutable chunks separated
 /// by a predicate.
 ///
-/// This struct is created by the [`group_by_mut`] method on [slices].
+/// This struct is created by the [`chunk_by_mut`] method on [slices].
 ///
-/// [`group_by_mut`]: slice::group_by_mut
+/// [`chunk_by_mut`]: slice::chunk_by_mut
 /// [slices]: slice
-#[unstable(feature = "slice_group_by", issue = "80552")]
+#[stable(feature = "slice_group_by", since = "1.77.0")]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
-pub struct GroupByMut<'a, T: 'a, P> {
+pub struct ChunkByMut<'a, T: 'a, P> {
     slice: &'a mut [T],
     predicate: P,
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> GroupByMut<'a, T, P> {
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> ChunkByMut<'a, T, P> {
     pub(super) fn new(slice: &'a mut [T], predicate: P) -> Self {
-        GroupByMut { slice, predicate }
+        ChunkByMut { slice, predicate }
     }
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> Iterator for GroupByMut<'a, T, P>
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> Iterator for ChunkByMut<'a, T, P>
 where
     P: FnMut(&T, &T) -> bool,
 {
@@ -3379,8 +3394,8 @@ where
     }
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> DoubleEndedIterator for GroupByMut<'a, T, P>
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> DoubleEndedIterator for ChunkByMut<'a, T, P>
 where
     P: FnMut(&T, &T) -> bool,
 {
@@ -3402,12 +3417,12 @@ where
     }
 }
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a, P> FusedIterator for GroupByMut<'a, T, P> where P: FnMut(&T, &T) -> bool {}
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a, P> FusedIterator for ChunkByMut<'a, T, P> where P: FnMut(&T, &T) -> bool {}
 
-#[unstable(feature = "slice_group_by", issue = "80552")]
-impl<'a, T: 'a + fmt::Debug, P> fmt::Debug for GroupByMut<'a, T, P> {
+#[stable(feature = "slice_group_by", since = "1.77.0")]
+impl<'a, T: 'a + fmt::Debug, P> fmt::Debug for ChunkByMut<'a, T, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupByMut").field("slice", &self.slice).finish()
+        f.debug_struct("ChunkByMut").field("slice", &self.slice).finish()
     }
 }

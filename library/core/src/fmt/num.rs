@@ -15,7 +15,7 @@ trait DisplayInt:
     fn zero() -> Self;
     fn from_u8(u: u8) -> Self;
     fn to_u8(&self) -> u8;
-    fn to_u16(&self) -> u16;
+    #[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
     fn to_u32(&self) -> u32;
     fn to_u64(&self) -> u64;
     fn to_u128(&self) -> u128;
@@ -27,7 +27,7 @@ macro_rules! impl_int {
           fn zero() -> Self { 0 }
           fn from_u8(u: u8) -> Self { u as Self }
           fn to_u8(&self) -> u8 { *self as u8 }
-          fn to_u16(&self) -> u16 { *self as u16 }
+          #[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
           fn to_u32(&self) -> u32 { *self as u32 }
           fn to_u64(&self) -> u64 { *self as u64 }
           fn to_u128(&self) -> u128 { *self as u128 }
@@ -40,7 +40,7 @@ macro_rules! impl_uint {
           fn zero() -> Self { 0 }
           fn from_u8(u: u8) -> Self { u as Self }
           fn to_u8(&self) -> u8 { *self as u8 }
-          fn to_u16(&self) -> u16 { *self as u16 }
+          #[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
           fn to_u32(&self) -> u32 { *self as u32 }
           fn to_u64(&self) -> u64 { *self as u64 }
           fn to_u128(&self) -> u128 { *self as u128 }
@@ -212,6 +212,7 @@ static DEC_DIGITS_LUT: &[u8; 200] = b"0001020304050607080910111213141516171819\
 
 macro_rules! impl_Display {
     ($($t:ident),* as $u:ident via $conv_fn:ident named $name:ident) => {
+        #[cfg(not(feature = "optimize_for_size"))]
         fn $name(mut n: $u, is_nonnegative: bool, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             // 2^128 is about 3*10^38, so 39 gives an extra byte of space
             let mut buf = [MaybeUninit::<u8>::uninit(); 39];
@@ -277,6 +278,38 @@ macro_rules! impl_Display {
             f.pad_integral(is_nonnegative, "", buf_slice)
         }
 
+        #[cfg(feature = "optimize_for_size")]
+        fn $name(mut n: $u, is_nonnegative: bool, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // 2^128 is about 3*10^38, so 39 gives an extra byte of space
+            let mut buf = [MaybeUninit::<u8>::uninit(); 39];
+            let mut curr = buf.len();
+            let buf_ptr = MaybeUninit::slice_as_mut_ptr(&mut buf);
+
+            // SAFETY: To show that it's OK to copy into `buf_ptr`, notice that at the beginning
+            // `curr == buf.len() == 39 > log(n)` since `n < 2^128 < 10^39`, and at
+            // each step this is kept the same as `n` is divided. Since `n` is always
+            // non-negative, this means that `curr > 0` so `buf_ptr[curr..curr + 1]`
+            // is safe to access.
+            unsafe {
+                loop {
+                    curr -= 1;
+                    buf_ptr.add(curr).write((n % 10) as u8 + b'0');
+                    n /= 10;
+
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+
+            // SAFETY: `curr` > 0 (since we made `buf` large enough), and all the chars are valid UTF-8
+            let buf_slice = unsafe {
+                str::from_utf8_unchecked(
+                    slice::from_raw_parts(buf_ptr.add(curr), buf.len() - curr))
+            };
+            f.pad_integral(is_nonnegative, "", buf_slice)
+        }
+
         $(#[stable(feature = "rust1", since = "1.0.0")]
         impl fmt::Display for $t {
             #[allow(unused_comparisons)]
@@ -309,7 +342,6 @@ macro_rules! impl_Exp {
                     n /= 10;
                     exponent += 1;
                 }
-
                 let (added_precision, subtracted_precision) = match f.precision() {
                     Some(fmt_prec) => {
                         // number of decimal digits minus 1
@@ -331,9 +363,15 @@ macro_rules! impl_Exp {
                     let rem = n % 10;
                     n /= 10;
                     exponent += 1;
-                    // round up last digit
-                    if rem >= 5 {
+                    // round up last digit, round to even on a tie
+                    if rem > 5 || (rem == 5 && (n % 2 != 0 || subtracted_precision > 1 )) {
                         n += 1;
+                        // if the digit is rounded to the next power
+                        // instead adjust the exponent
+                        if n.ilog10() > (n - 1).ilog10() {
+                            n /= 10;
+                            exponent += 1;
+                        }
                     }
                 }
                 (n, exponent, exponent, added_precision)

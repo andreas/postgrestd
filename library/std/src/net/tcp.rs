@@ -1,6 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(all(test, not(any(target_os = "emscripten", target_os = "xous"))))]
 mod tests;
 
 use crate::io::prelude::*;
@@ -647,6 +647,7 @@ impl Write for TcpStream {
         self.0.is_write_vectored()
     }
 
+    #[inline]
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -685,6 +686,7 @@ impl Write for &TcpStream {
         self.0.is_write_vectored()
     }
 
+    #[inline]
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }

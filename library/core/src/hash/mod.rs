@@ -12,8 +12,7 @@
 //! # Examples
 //!
 //! ```rust
-//! use std::collections::hash_map::DefaultHasher;
-//! use std::hash::{Hash, Hasher};
+//! use std::hash::{DefaultHasher, Hash, Hasher};
 //!
 //! #[derive(Hash)]
 //! struct Person {
@@ -46,8 +45,7 @@
 //! the [`Hash`] trait:
 //!
 //! ```rust
-//! use std::collections::hash_map::DefaultHasher;
-//! use std::hash::{Hash, Hasher};
+//! use std::hash::{DefaultHasher, Hash, Hasher};
 //!
 //! struct Person {
 //!     id: u32,
@@ -153,6 +151,11 @@ mod sip;
 /// Thankfully, you won't need to worry about upholding this property when
 /// deriving both [`Eq`] and `Hash` with `#[derive(PartialEq, Eq, Hash)]`.
 ///
+/// Violating this property is a logic error. The behavior resulting from a logic error is not
+/// specified, but users of the trait must ensure that such logic errors do *not* result in
+/// undefined behavior. This means that `unsafe` code **must not** rely on the correctness of these
+/// methods.
+///
 /// ## Prefix collisions
 ///
 /// Implementations of `hash` should ensure that the data they
@@ -189,8 +192,7 @@ pub trait Hash {
     /// # Examples
     ///
     /// ```
-    /// use std::collections::hash_map::DefaultHasher;
-    /// use std::hash::{Hash, Hasher};
+    /// use std::hash::{DefaultHasher, Hash, Hasher};
     ///
     /// let mut hasher = DefaultHasher::new();
     /// 7920.hash(&mut hasher);
@@ -219,8 +221,7 @@ pub trait Hash {
     /// # Examples
     ///
     /// ```
-    /// use std::collections::hash_map::DefaultHasher;
-    /// use std::hash::{Hash, Hasher};
+    /// use std::hash::{DefaultHasher, Hash, Hasher};
     ///
     /// let mut hasher = DefaultHasher::new();
     /// let numbers = [6, 28, 496, 8128];
@@ -295,8 +296,7 @@ pub use macros::Hash;
 /// # Examples
 ///
 /// ```
-/// use std::collections::hash_map::DefaultHasher;
-/// use std::hash::Hasher;
+/// use std::hash::{DefaultHasher, Hasher};
 ///
 /// let mut hasher = DefaultHasher::new();
 ///
@@ -324,8 +324,7 @@ pub trait Hasher {
     /// # Examples
     ///
     /// ```
-    /// use std::collections::hash_map::DefaultHasher;
-    /// use std::hash::Hasher;
+    /// use std::hash::{DefaultHasher, Hasher};
     ///
     /// let mut hasher = DefaultHasher::new();
     /// hasher.write(b"Cool!");
@@ -342,8 +341,7 @@ pub trait Hasher {
     /// # Examples
     ///
     /// ```
-    /// use std::collections::hash_map::DefaultHasher;
-    /// use std::hash::Hasher;
+    /// use std::hash::{DefaultHasher, Hasher};
     ///
     /// let mut hasher = DefaultHasher::new();
     /// let data = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
@@ -456,6 +454,7 @@ pub trait Hasher {
     /// ```
     /// #![feature(hasher_prefixfree_extras)]
     /// # // Stubs to make the `impl` below pass the compiler
+    /// # #![allow(non_local_definitions)]
     /// # struct MyCollection<T>(Option<T>);
     /// # impl<T> MyCollection<T> {
     /// #     fn len(&self) -> usize { todo!() }
@@ -622,8 +621,7 @@ impl<H: Hasher + ?Sized> Hasher for &mut H {
 /// # Examples
 ///
 /// ```
-/// use std::collections::hash_map::RandomState;
-/// use std::hash::{BuildHasher, Hasher};
+/// use std::hash::{BuildHasher, Hasher, RandomState};
 ///
 /// let s = RandomState::new();
 /// let mut hasher_1 = s.build_hasher();
@@ -651,8 +649,7 @@ pub trait BuildHasher {
     /// # Examples
     ///
     /// ```
-    /// use std::collections::hash_map::RandomState;
-    /// use std::hash::BuildHasher;
+    /// use std::hash::{BuildHasher, RandomState};
     ///
     /// let s = RandomState::new();
     /// let new_s = s.build_hasher();
@@ -685,7 +682,7 @@ pub trait BuildHasher {
     /// }
     ///
     /// // Then later, in a `#[test]` for the type...
-    /// let bh = std::collections::hash_map::RandomState::new();
+    /// let bh = std::hash::RandomState::new();
     /// assert_eq!(
     ///     bh.hash_one(OrderAmbivalentPair(1, 2)),
     ///     bh.hash_one(OrderAmbivalentPair(2, 1))
@@ -755,6 +752,18 @@ pub trait BuildHasher {
 #[stable(since = "1.7.0", feature = "build_hasher")]
 pub struct BuildHasherDefault<H>(marker::PhantomData<fn() -> H>);
 
+impl<H> BuildHasherDefault<H> {
+    /// Creates a new BuildHasherDefault for Hasher `H`.
+    #[unstable(
+        feature = "build_hasher_default_const_new",
+        issue = "123197",
+        reason = "recently added"
+    )]
+    pub const fn new() -> Self {
+        BuildHasherDefault(marker::PhantomData)
+    }
+}
+
 #[stable(since = "1.9.0", feature = "core_impl_debug")]
 impl<H> fmt::Debug for BuildHasherDefault<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -781,7 +790,7 @@ impl<H> Clone for BuildHasherDefault<H> {
 #[stable(since = "1.7.0", feature = "build_hasher")]
 impl<H> Default for BuildHasherDefault<H> {
     fn default() -> BuildHasherDefault<H> {
-        BuildHasherDefault(marker::PhantomData)
+        Self::new()
     }
 }
 

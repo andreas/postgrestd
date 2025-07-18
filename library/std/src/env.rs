@@ -78,7 +78,7 @@ pub fn current_dir() -> io::Result<PathBuf> {
 /// assert!(env::set_current_dir(&root).is_ok());
 /// println!("Successfully changed working directory to {}!", root.display());
 /// ```
-#[doc(alias = "chdir")]
+#[doc(alias = "chdir", alias = "SetCurrentDirectory", alias = "SetCurrentDirectoryW")]
 #[stable(feature = "env", since = "1.0.0")]
 pub fn set_current_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
     os_imp::chdir(path.as_ref())
@@ -178,7 +178,8 @@ impl Iterator for Vars {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Vars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Vars").finish_non_exhaustive()
+        let Self { inner: VarsOs { inner } } = self;
+        f.debug_struct("Vars").field("inner", &inner.str_debug()).finish()
     }
 }
 
@@ -196,7 +197,8 @@ impl Iterator for VarsOs {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for VarsOs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VarOs").finish_non_exhaustive()
+        let Self { inner } = self;
+        f.debug_struct("VarsOs").field("inner", inner).finish()
     }
 }
 
@@ -256,6 +258,9 @@ fn _var(key: &OsStr) -> Result<String, VarError> {
 ///     None => println!("{key} is not defined in the environment.")
 /// }
 /// ```
+///
+/// If expecting a delimited variable (such as `PATH`), [`split_paths`]
+/// can be used to separate items.
 #[must_use]
 #[stable(feature = "env", since = "1.0.0")]
 pub fn var_os<K: AsRef<OsStr>>(key: K) -> Option<OsString> {
@@ -311,16 +316,34 @@ impl Error for VarError {
 /// Sets the environment variable `key` to the value `value` for the currently running
 /// process.
 ///
-/// Note that while concurrent access to environment variables is safe in Rust,
-/// some platforms only expose inherently unsafe non-threadsafe APIs for
-/// inspecting the environment. As a result, extra care needs to be taken when
-/// auditing calls to unsafe external FFI functions to ensure that any external
-/// environment accesses are properly synchronized with accesses in Rust.
+/// # Safety
+///
+/// This function is safe to call in a single-threaded program.
+///
+/// This function is also always safe to call on Windows, in single-threaded
+/// and multi-threaded programs.
+///
+/// In multi-threaded programs on other operating systems, we strongly suggest
+/// not using `set_var` or `remove_var` at all. The exact requirement is: you
+/// must ensure that there are no other threads concurrently writing or
+/// *reading*(!) the environment through functions or global variables other
+/// than the ones in this module. The problem is that these operating systems
+/// do not provide a thread-safe way to read the environment, and most C
+/// libraries, including libc itself, do not advertise which functions read
+/// from the environment. Even functions from the Rust standard library may
+/// read the environment without going through this module, e.g. for DNS
+/// lookups from [`std::net::ToSocketAddrs`]. No stable guarantee is made about
+/// which functions may read from the environment in future versions of a
+/// library. All this makes it not practically possible for you to guarantee
+/// that no other thread will read the environment, so the only safe option is
+/// to not use `set_var` or `remove_var` in multi-threaded programs at all.
 ///
 /// Discussion of this unsafety on Unix may be found in:
 ///
 ///  - [Austin Group Bugzilla](https://austingroupbugs.net/view.php?id=188)
 ///  - [GNU C library Bugzilla](https://sourceware.org/bugzilla/show_bug.cgi?id=15607#c2)
+///
+/// [`std::net::ToSocketAddrs`]: crate::net::ToSocketAddrs
 ///
 /// # Panics
 ///
@@ -333,15 +356,26 @@ impl Error for VarError {
 /// use std::env;
 ///
 /// let key = "KEY";
-/// env::set_var(key, "VALUE");
+/// unsafe {
+///     env::set_var(key, "VALUE");
+/// }
 /// assert_eq!(env::var(key), Ok("VALUE".to_string()));
 /// ```
+#[cfg(not(bootstrap))]
+#[rustc_deprecated_safe_2024]
 #[stable(feature = "env", since = "1.0.0")]
-pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+pub unsafe fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
     _set_var(key.as_ref(), value.as_ref())
 }
 
-fn _set_var(key: &OsStr, value: &OsStr) {
+#[cfg(bootstrap)]
+#[allow(missing_docs)]
+#[stable(feature = "env", since = "1.0.0")]
+pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+    unsafe { _set_var(key.as_ref(), value.as_ref()) }
+}
+
+unsafe fn _set_var(key: &OsStr, value: &OsStr) {
     os_imp::setenv(key, value).unwrap_or_else(|e| {
         panic!("failed to set environment variable `{key:?}` to `{value:?}`: {e}")
     })
@@ -349,16 +383,34 @@ fn _set_var(key: &OsStr, value: &OsStr) {
 
 /// Removes an environment variable from the environment of the currently running process.
 ///
-/// Note that while concurrent access to environment variables is safe in Rust,
-/// some platforms only expose inherently unsafe non-threadsafe APIs for
-/// inspecting the environment. As a result extra care needs to be taken when
-/// auditing calls to unsafe external FFI functions to ensure that any external
-/// environment accesses are properly synchronized with accesses in Rust.
+/// # Safety
+///
+/// This function is safe to call in a single-threaded program.
+///
+/// This function is also always safe to call on Windows, in single-threaded
+/// and multi-threaded programs.
+///
+/// In multi-threaded programs on other operating systems, we strongly suggest
+/// not using `set_var` or `remove_var` at all. The exact requirement is: you
+/// must ensure that there are no other threads concurrently writing or
+/// *reading*(!) the environment through functions or global variables other
+/// than the ones in this module. The problem is that these operating systems
+/// do not provide a thread-safe way to read the environment, and most C
+/// libraries, including libc itself, do not advertise which functions read
+/// from the environment. Even functions from the Rust standard library may
+/// read the environment without going through this module, e.g. for DNS
+/// lookups from [`std::net::ToSocketAddrs`]. No stable guarantee is made about
+/// which functions may read from the environment in future versions of a
+/// library. All this makes it not practically possible for you to guarantee
+/// that no other thread will read the environment, so the only safe option is
+/// to not use `set_var` or `remove_var` in multi-threaded programs at all.
 ///
 /// Discussion of this unsafety on Unix may be found in:
 ///
 ///  - [Austin Group Bugzilla](https://austingroupbugs.net/view.php?id=188)
 ///  - [GNU C library Bugzilla](https://sourceware.org/bugzilla/show_bug.cgi?id=15607#c2)
+///
+/// [`std::net::ToSocketAddrs`]: crate::net::ToSocketAddrs
 ///
 /// # Panics
 ///
@@ -368,22 +420,35 @@ fn _set_var(key: &OsStr, value: &OsStr) {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use std::env;
 ///
 /// let key = "KEY";
-/// env::set_var(key, "VALUE");
+/// unsafe {
+///     env::set_var(key, "VALUE");
+/// }
 /// assert_eq!(env::var(key), Ok("VALUE".to_string()));
 ///
-/// env::remove_var(key);
+/// unsafe {
+///     env::remove_var(key);
+/// }
 /// assert!(env::var(key).is_err());
 /// ```
+#[cfg(not(bootstrap))]
+#[rustc_deprecated_safe_2024]
 #[stable(feature = "env", since = "1.0.0")]
-pub fn remove_var<K: AsRef<OsStr>>(key: K) {
+pub unsafe fn remove_var<K: AsRef<OsStr>>(key: K) {
     _remove_var(key.as_ref())
 }
 
-fn _remove_var(key: &OsStr) {
+#[cfg(bootstrap)]
+#[allow(missing_docs)]
+#[stable(feature = "env", since = "1.0.0")]
+pub fn remove_var<K: AsRef<OsStr>>(key: K) {
+    unsafe { _remove_var(key.as_ref()) }
+}
+
+unsafe fn _remove_var(key: &OsStr) {
     os_imp::unsetenv(key)
         .unwrap_or_else(|e| panic!("failed to remove environment variable `{key:?}`: {e}"))
 }
@@ -408,6 +473,16 @@ pub struct SplitPaths<'a> {
 ///
 /// Returns an iterator over the paths contained in `unparsed`. The iterator
 /// element type is [`PathBuf`].
+///
+/// On most Unix platforms, the separator is `:` and on Windows it is `;`. This
+/// also performs unquoting on Windows.
+///
+/// [`join_paths`] can be used to recombine elements.
+///
+/// # Panics
+///
+/// This will panic on systems where there is no delimited `PATH` variable,
+/// such as UEFI.
 ///
 /// # Examples
 ///
@@ -464,7 +539,8 @@ pub struct JoinPathsError {
 ///
 /// Returns an [`Err`] (containing an error message) if one of the input
 /// [`Path`]s contains an invalid character for constructing the `PATH`
-/// variable (a double quote on Windows or a colon on Unix).
+/// variable (a double quote on Windows or a colon on Unix), or if the system
+/// does not have a `PATH`-like variable (e.g. UEFI or WASI).
 ///
 /// # Examples
 ///
@@ -623,6 +699,7 @@ pub fn home_dir() -> Option<PathBuf> {
 /// }
 /// ```
 #[must_use]
+#[doc(alias = "GetTempPath", alias = "GetTempPath2")]
 #[stable(feature = "env", since = "1.0.0")]
 pub fn temp_dir() -> PathBuf {
     os_imp::temp_dir()
@@ -829,7 +906,8 @@ impl DoubleEndedIterator for Args {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Args {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Args").field("inner", &self.inner.inner).finish()
+        let Self { inner: ArgsOs { inner } } = self;
+        f.debug_struct("Args").field("inner", inner).finish()
     }
 }
 
@@ -870,7 +948,8 @@ impl DoubleEndedIterator for ArgsOs {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for ArgsOs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ArgsOs").field("inner", &self.inner).finish()
+        let Self { inner } = self;
+        f.debug_struct("ArgsOs").field("inner", inner).finish()
     }
 }
 
@@ -890,6 +969,7 @@ pub mod consts {
     /// - aarch64
     /// - loongarch64
     /// - m68k
+    /// - csky
     /// - mips
     /// - mips64
     /// - powerpc

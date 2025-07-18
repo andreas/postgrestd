@@ -1,6 +1,6 @@
-use crate::intrinsics::{assert_unsafe_precondition, unchecked_add, unchecked_sub};
 use crate::iter::{FusedIterator, TrustedLen};
-use crate::num::NonZeroUsize;
+use crate::num::NonZero;
+use crate::ub_checks;
 
 /// Like a `Range<usize>`, but with a safety invariant that `start <= end`.
 ///
@@ -19,13 +19,11 @@ impl IndexRange {
     /// - `start <= end`
     #[inline]
     pub const unsafe fn new_unchecked(start: usize, end: usize) -> Self {
-        // SAFETY: comparisons on usize are pure
-        unsafe {
-            assert_unsafe_precondition!(
-               "IndexRange::new_unchecked requires `start <= end`",
-                (start: usize, end: usize) => start <= end
-            )
-        };
+        ub_checks::assert_unsafe_precondition!(
+            check_library_ub,
+            "IndexRange::new_unchecked requires `start <= end`",
+            (start: usize = start, end: usize = end) => start <= end,
+        );
         IndexRange { start, end }
     }
 
@@ -47,7 +45,7 @@ impl IndexRange {
     #[inline]
     pub const fn len(&self) -> usize {
         // SAFETY: By invariant, this cannot wrap
-        unsafe { unchecked_sub(self.end, self.start) }
+        unsafe { self.end.unchecked_sub(self.start) }
     }
 
     /// # Safety
@@ -58,7 +56,7 @@ impl IndexRange {
 
         let value = self.start;
         // SAFETY: The range isn't empty, so this cannot overflow
-        self.start = unsafe { unchecked_add(value, 1) };
+        self.start = unsafe { value.unchecked_add(1) };
         value
     }
 
@@ -69,7 +67,7 @@ impl IndexRange {
         debug_assert!(self.start < self.end);
 
         // SAFETY: The range isn't empty, so this cannot overflow
-        let value = unsafe { unchecked_sub(self.end, 1) };
+        let value = unsafe { self.end.unchecked_sub(1) };
         self.end = value;
         value
     }
@@ -84,7 +82,7 @@ impl IndexRange {
         let mid = if n <= self.len() {
             // SAFETY: We just checked that this will be between start and end,
             // and thus the addition cannot overflow.
-            unsafe { unchecked_add(self.start, n) }
+            unsafe { self.start.unchecked_add(n) }
         } else {
             self.end
         };
@@ -103,7 +101,7 @@ impl IndexRange {
         let mid = if n <= self.len() {
             // SAFETY: We just checked that this will be between start and end,
             // and thus the addition cannot overflow.
-            unsafe { unchecked_sub(self.end, n) }
+            unsafe { self.end.unchecked_sub(n) }
         } else {
             self.start
         };
@@ -133,9 +131,9 @@ impl Iterator for IndexRange {
     }
 
     #[inline]
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
         let taken = self.take_prefix(n);
-        NonZeroUsize::new(n - taken.len()).map_or(Ok(()), Err)
+        NonZero::new(n - taken.len()).map_or(Ok(()), Err)
     }
 }
 
@@ -151,9 +149,9 @@ impl DoubleEndedIterator for IndexRange {
     }
 
     #[inline]
-    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
         let taken = self.take_suffix(n);
-        NonZeroUsize::new(n - taken.len()).map_or(Ok(()), Err)
+        NonZero::new(n - taken.len()).map_or(Ok(()), Err)
     }
 }
 

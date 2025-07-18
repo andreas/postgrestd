@@ -3,8 +3,18 @@
 #![feature(link_cfg)]
 #![feature(staged_api)]
 #![feature(c_unwind)]
-#![feature(cfg_target_abi)]
+#![feature(strict_provenance)]
+#![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
 #![cfg_attr(not(target_env = "msvc"), feature(libc))]
+#![cfg_attr(
+    all(target_family = "wasm", not(target_os = "emscripten")),
+    feature(link_llvm_intrinsics)
+)]
+#![allow(internal_features)]
+
+// Force libc to be included even if unused. This is required by many platforms.
+#[cfg(not(all(windows, target_env = "msvc")))]
+extern crate libc as _;
 
 cfg_if::cfg_if! {
     if #[cfg(target_env = "msvc")] {
@@ -24,9 +34,14 @@ cfg_if::cfg_if! {
     ))] {
         mod libunwind;
         pub use libunwind::*;
+    } else if #[cfg(target_os = "xous")] {
+        mod unwinding;
+        pub use unwinding::*;
+    } else if #[cfg(target_family = "wasm")] {
+        mod wasm;
+        pub use wasm::*;
     } else {
         // no unwinder on the system!
-        // - wasm32 (not emscripten, which is "unix" family)
         // - os=none ("bare metal" targets)
         // - os=hermit
         // - os=uefi
@@ -74,13 +89,9 @@ cfg_if::cfg_if! {
 cfg_if::cfg_if! {
     if #[cfg(feature = "llvm-libunwind")] {
         compile_error!("`llvm-libunwind` is not supported for Android targets");
-    } else if #[cfg(feature = "system-llvm-libunwind")] {
+    } else {
         #[link(name = "unwind", kind = "static", modifiers = "-bundle", cfg(target_feature = "crt-static"))]
         #[link(name = "unwind", cfg(not(target_feature = "crt-static")))]
-        extern "C" {}
-    } else {
-        #[link(name = "gcc", kind = "static", modifiers = "-bundle", cfg(target_feature = "crt-static"))]
-        #[link(name = "gcc", cfg(not(target_feature = "crt-static")))]
         extern "C" {}
     }
 }
@@ -120,8 +131,14 @@ extern "C" {}
 #[link(name = "unwind", kind = "static", modifiers = "-bundle")]
 extern "C" {}
 
-#[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
+#[cfg(target_os = "netbsd")]
 #[link(name = "gcc_s")]
+extern "C" {}
+
+#[cfg(target_os = "freebsd")]
+#[link(name = "gcc", kind = "static", modifiers = "-bundle", cfg(target_feature = "crt-static"))]
+#[link(name = "gcc_eh", kind = "static", modifiers = "-bundle", cfg(target_feature = "crt-static"))]
+#[link(name = "gcc_s", cfg(not(target_feature = "crt-static")))]
 extern "C" {}
 
 #[cfg(all(target_os = "openbsd", target_arch = "sparc64"))]
@@ -144,6 +161,14 @@ extern "C" {}
 #[link(name = "gcc_s")]
 extern "C" {}
 
+#[cfg(target_os = "aix")]
+#[link(name = "unwind")]
+extern "C" {}
+
 #[cfg(target_os = "nto")]
+#[link(name = "gcc_s")]
+extern "C" {}
+
+#[cfg(target_os = "hurd")]
 #[link(name = "gcc_s")]
 extern "C" {}

@@ -136,7 +136,10 @@
 //! - [`Once`]: Used for a thread-safe, one-time global initialization routine
 //!
 //! - [`OnceLock`]: Used for thread-safe, one-time initialization of a
-//!   global variable.
+//!   variable, with potentially different initializers based on the caller.
+//!
+//! - [`LazyLock`]: Used for thread-safe, one-time initialization of a
+//!   variable, using one nullary initializer function provided at creation.
 //!
 //! - [`RwLock`]: Provides a mutual exclusion mechanism which allows
 //!   multiple readers at the same time, while allowing only one
@@ -165,6 +168,8 @@ pub use core::sync::Exclusive;
 pub use self::barrier::{Barrier, BarrierWaitResult};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::condvar::{Condvar, WaitTimeoutResult};
+#[unstable(feature = "mapped_lock_guards", issue = "117108")]
+pub use self::mutex::MappedMutexGuard;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::mutex::{Mutex, MutexGuard};
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -172,15 +177,18 @@ pub use self::mutex::{Mutex, MutexGuard};
 pub use self::once::{Once, OnceState, ONCE_INIT};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::poison::{LockResult, PoisonError, TryLockError, TryLockResult};
+#[unstable(feature = "mapped_lock_guards", issue = "117108")]
+pub use self::rwlock::{MappedRwLockReadGuard, MappedRwLockWriteGuard};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-#[unstable(feature = "lazy_cell", issue = "109736")]
+#[stable(feature = "lazy_cell", since = "1.80.0")]
 pub use self::lazy_lock::LazyLock;
 #[stable(feature = "once_cell", since = "1.70.0")]
 pub use self::once_lock::OnceLock;
 
-pub(crate) use self::remutex::{ReentrantMutex, ReentrantMutexGuard};
+#[unstable(feature = "reentrant_lock", issue = "121440")]
+pub use self::reentrant_lock::{ReentrantLock, ReentrantLockGuard};
 
 pub mod mpsc;
 
@@ -192,5 +200,5 @@ mod mutex;
 pub(crate) mod once;
 mod once_lock;
 mod poison;
-mod remutex;
+mod reentrant_lock;
 mod rwlock;
